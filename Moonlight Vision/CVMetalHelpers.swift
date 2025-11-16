@@ -237,13 +237,13 @@ class CVMetalHelpers {
     // Get bits per component for video format
     static func getBpcForVideoFormat(_ videoFormat: CMFormatDescription) -> Int {
         let bpcRaw = videoFormat.extensions["BitsPerComponent" as CFString]
-        return (bpcRaw != nil ? bpcRaw as! NSNumber : 8).intValue
+        return (bpcRaw as? NSNumber)?.intValue ?? 8
     }
-    
+
     // Returns true if video format is full-range
     static func getIsFullRangeForVideoFormat(_ videoFormat: CMFormatDescription) -> Bool {
         let isFullVideoRaw = videoFormat.extensions["FullRangeVideo" as CFString]
-        return ((isFullVideoRaw != nil ? isFullVideoRaw as! NSNumber : 0).intValue != 0)
+        return (isFullVideoRaw as? NSNumber)?.intValue != 0
     }
     
     // The Metal texture formats for each of the planes of a given CVPixelFormatType
