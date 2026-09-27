@@ -97,8 +97,16 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     /// Video format description, used when creating sample buffers
     private var formatDesc: CMVideoFormatDescription?
 
-    /// Display link for pacing decode submissions
+    /// Display link for pacing decode submissions ("Smoothest Video")
     private var displayLink: CADisplayLink?
+
+    /// "Lowest Latency": a dedicated thread decodes each frame as soon as it is reassembled
+    /// instead of waiting for the next display-link tick on the main thread.
+    private var decodeThread: Thread?
+    /// Serialises frame submission with stop(), which the library calls before it wakes
+    /// the decode thread out of LiWaitForNextVideoFrame().
+    private let decodeLock = NSLock()
+    private var decodeThreadActive = false
 
     private let texture: TextureResource
     private var outTexture: MTLTexture?
@@ -679,6 +687,11 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     }
 
     func start() {
+        if !framePacing {
+            startDecodeThread()
+            return
+        }
+
         print("DrawableVideoDecoder: start() display link")
         displayLink = CADisplayLink(target: self, selector: #selector(displayLinkCallback(_:)))
         if #available(iOS 15.0, tvOS 15.0, *) {
@@ -699,6 +712,13 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         print("DrawableVideoDecoder: stop()")
         displayLink?.invalidate()
         displayLink = nil
+
+        // The decode thread is blocked in LiWaitForNextVideoFrame() and exits once the library
+        // shuts the frame queue down, right after this call; it must not be joined here.
+        decodeLock.lock()
+        defer { decodeLock.unlock() }
+        decodeThreadActive = false
+        decodeThread = nil
         
         if let session = session {
             VTDecompressionSessionInvalidate(session)
@@ -726,6 +746,35 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     }
 
     // MARK: - Rendering Loop
+
+    private func startDecodeThread() {
+        print("DrawableVideoDecoder: start() decode-on-arrival thread")
+        decodeLock.lock()
+        decodeThreadActive = true
+        decodeLock.unlock()
+
+        let thread = Thread { [weak self] in
+            var handle: VIDEO_FRAME_HANDLE?
+            var du: PDECODE_UNIT?
+            // Returns false once the connection shuts the frame queue down.
+            while LiWaitForNextVideoFrame(&handle, &du) {
+                guard let handle, let du else { continue }
+                guard let self else {
+                    LiCompleteVideoFrame(handle, DR_OK)
+                    continue
+                }
+                self.decodeLock.lock()
+                let result = self.decodeThreadActive ? DrSubmitDecodeUnit(du) : DR_OK
+                self.decodeLock.unlock()
+                LiCompleteVideoFrame(handle, result)
+            }
+            print("DrawableVideoDecoder: decode thread exited")
+        }
+        thread.name = "Moonlight video decode"
+        thread.qualityOfService = .userInteractive
+        decodeThread = thread
+        thread.start()
+    }
 
     @objc private func displayLinkCallback(_ sender: CADisplayLink) {
         var handle: VIDEO_FRAME_HANDLE?
@@ -813,7 +862,9 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
 
                 // Reconfiguring the audio session on every recovery IDR can stall playback.
                 if isFirstSession {
-                    AudioHelpers.fixAudioForSurroundForCurrentWindow()
+                    DispatchQueue.main.async {
+                        AudioHelpers.fixAudioForSurroundForCurrentWindow()
+                    }
                 }
             } else {
                 free(dataPtr)
@@ -848,7 +899,9 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         // first frame is composited.  Subsequent IDR frames (error recovery)
         // must NOT re-fire the callback or they flood onChange observers.
         if decodeUnit.pointee.frameType == FRAME_TYPE_IDR && !firstFrameEmitted {
-            callbacks.videoContentShown()
+            DispatchQueue.main.async { [callbacks] in
+                callbacks.videoContentShown()
+            }
         }
 
         return DR_OK
