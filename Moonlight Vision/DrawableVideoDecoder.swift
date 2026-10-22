@@ -788,11 +788,9 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                 if hdrEnabled {
                     attributes[kCVPixelBufferPixelFormatTypeKey] = kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
                 } else {
-                    if (self.videoFormat & VIDEO_FORMAT_MASK_AV1) != 0 {
-                        attributes[kCVPixelBufferPixelFormatTypeKey] = kCVPixelFormatType_Lossless_32BGRA
-                    } else {
-                        attributes[kCVPixelBufferPixelFormatTypeKey] = decodingFormat
-                    }
+                    // AV1 used to request the private lossless BGRA format, which yields no usable
+                    // output surface on M5 Vision Pro (connected black screen). NV12 works for all codecs.
+                    attributes[kCVPixelBufferPixelFormatTypeKey] = decodingFormat
                 }
                 
                 // Every IDR gets a fresh session; release the previous one instead of leaking it.
