@@ -13,6 +13,7 @@
 
 import SwiftUI
 import RealityKit
+import Metal
 import simd
 import GameController
 import ARKit
@@ -1744,9 +1745,23 @@ struct _RealityKitStreamView: View {
         updateScreenMaterial()
     }
 
+    /// Every material that shows the video samples it through this. RealityKit's default sampler is
+    /// already trilinear, but isotropic and repeat-wrapped; the curved screen is seen at grazing
+    /// angles, and repeat bleeds the opposite edge into the border at the coarser mips.
+    private func videoTexture(_ texture: TextureResource) -> MaterialParameters.Texture {
+        let sampler = MTLSamplerDescriptor()
+        sampler.minFilter = .linear
+        sampler.magFilter = .linear
+        sampler.mipFilter = .linear
+        sampler.maxAnisotropy = 16
+        sampler.sAddressMode = .clampToEdge
+        sampler.tAddressMode = .clampToEdge
+        return .init(texture, sampler: .init(sampler))
+    }
+
     private func makeVideoUnlitMaterial(_ texture: TextureResource) -> UnlitMaterial {
         var material = UnlitMaterial(applyPostProcessToneMap: false)
-        material.color = .init(texture: .init(texture))
+        material.color = .init(texture: videoTexture(texture))
         return material
     }
 
