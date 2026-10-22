@@ -1180,32 +1180,13 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     // MARK: - HDR Mode
 
     func setHdrMode(_ enabled: Bool) {
-        var metadataChanged = false
-
         let displayMetadata = HDRParsingUtils.parseHDRDisplayMetadata(enabled)
-
-        if let displayMetadata = displayMetadata,
-           masteringDisplayColorVolume == nil ||
-           masteringDisplayColorVolume != displayMetadata
-        {
-            masteringDisplayColorVolume = displayMetadata
-            metadataChanged = true
-        } else if masteringDisplayColorVolume != nil {
-            masteringDisplayColorVolume = nil
-            metadataChanged = true
-        }
-
         let lightMetadata = HDRParsingUtils.parseHDRLightMetadata(enabled)
-        if let lightMetadata = lightMetadata,
-           contentLightLevelInfo == nil ||
-           contentLightLevelInfo != lightMetadata
-        {
-            contentLightLevelInfo = lightMetadata
-            metadataChanged = true
-        } else if contentLightLevelInfo != nil {
-            contentLightLevelInfo = nil
-            metadataChanged = true
-        }
+
+        let metadataChanged = displayMetadata != masteringDisplayColorVolume
+            || lightMetadata != contentLightLevelInfo
+        masteringDisplayColorVolume = displayMetadata
+        contentLightLevelInfo = lightMetadata
 
         if metadataChanged {
             LiRequestIdrFrame()
