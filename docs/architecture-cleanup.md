@@ -125,7 +125,7 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 | B lifecycle | @thread:thr_hewxt4aksp | bb/cleanup-b-connection-audio-lifecycle-fixes-thr_hewxt4aksp | merged |
 | C settings | @thread:thr_rtzxjcquha | bb/cleanup-c-settings-fixes-key-registry-thr_rtzxjcquha | merged |
 | D deletions | @thread:thr_978eyitr5x | bb/cleanup-d-dead-code-and-asset-deletions-thr_978eyitr5x | merged |
-| E+F StreamSession | | | waiting on wave 1 |
+| E+F StreamSession | @thread:thr_f7mz2irbqy | own worktree | phase 1: extractions + design proposal |
 | G shimmer | @thread:thr_c5z7nwws7h | own worktree | running (hypothesis: default sampler, no anisotropic filtering) |
 | Review | | | |
 
