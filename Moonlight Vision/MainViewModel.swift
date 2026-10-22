@@ -579,19 +579,20 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
                 }
             }
 
-            let removedApps = host.appList.subtracting(newAppList)
-            if !removedApps.isEmpty {
-                print("refreshAppsFor - Removing \(removedApps.count) apps no longer present on server.")
-                let database = DataManager()
-                for removedApp in removedApps {
-                    database.remove(removedApp)
-                }
-                database.updateApps(forExisting: host)
-            }
-
             if host.appList != newAppList {
                 print("refreshAppsFor - App list changed. Updating host.")
+                let removedApps = host.appList.subtracting(newAppList)
+                // Assign before persisting: updateApps(forExisting:) saves host.appList as-is.
                 host.appList = newAppList
+
+                let database = DataManager()
+                if !removedApps.isEmpty {
+                    print("refreshAppsFor - Removing \(removedApps.count) apps no longer present on server.")
+                    for removedApp in removedApps {
+                        database.remove(removedApp)
+                    }
+                }
+                database.updateApps(forExisting: host)
             } else {
                 print("refreshAppsFor - App list unchanged.")
             }
