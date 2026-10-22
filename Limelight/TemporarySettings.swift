@@ -292,15 +292,17 @@ public class TemporarySettings: NSObject {
             self.macVirtualDisplayExperimental = UserDefaults.standard.bool(forKey: .macVirtualDisplayExperimental)
             
             // --- HDR / COLOR LOADING ---
-            let loadedBrightness = settings.brightness?.floatValue ?? 1.0
-            let loadedGamma = settings.gamma?.floatValue ?? 1.0
-            let loadedSaturation = settings.saturation?.floatValue ?? 1.0
-            // The Core Data model defaults these to 0.0, so a record that never saved them loads as
-            // all zeros (a blank HDR picture) instead of nil. Treat that as unset.
-            let colorNeverSaved = loadedBrightness == 0 && loadedGamma == 0 && loadedSaturation == 0
-            self.brightness = colorNeverSaved ? 1.0 : loadedBrightness
-            self.gamma = colorNeverSaved ? 1.0 : loadedGamma
-            self.saturation = colorNeverSaved ? 1.0 : loadedSaturation
+            // The Core Data model defaults these attributes to 0.0, so on a fresh install the
+            // stored NSNumber is 0.0 (not nil) and the `?? 1.0` fallback never fires. All three
+            // are multiplicative factors in the HDR shader: boost=0 renders pure black,
+            // saturation=0 greyscale, contrast=0 flat. Treat 0 as "unset" and use neutral 1.0.
+            func neutralIfUnset(_ value: NSNumber?) -> Float {
+                let f = value?.floatValue ?? 1.0
+                return f == 0.0 ? 1.0 : f
+            }
+            self.brightness = neutralIfUnset(settings.brightness)
+            self.gamma = neutralIfUnset(settings.gamma)
+            self.saturation = neutralIfUnset(settings.saturation)
             self.pqExposure = 1.0
             
             if let storedLang = UserDefaults.standard.object(forKey: .appLanguagePreference) as? Int {
