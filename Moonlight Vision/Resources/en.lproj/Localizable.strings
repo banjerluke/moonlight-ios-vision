@@ -174,6 +174,8 @@
 "unknown" = "Unknown";
 "running" = "Running";
 "stop" = "Stop";
+"stop_failed_title" = "Couldn't Stop App";
+"stop_failed_message" = "The host didn't quit the app. If another device started it, quit it from that device.";
 "active_stream" = "Active Stream";
 "go_back_to_window" = "Go back to window";
 "force_quit" = "Force quit";

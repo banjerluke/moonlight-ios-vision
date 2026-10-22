@@ -175,6 +175,8 @@
 "unknown" = "未知";
 "running" = "运行中";
 "stop" = "停止";
+"stop_failed_title" = "无法停止应用";
+"stop_failed_message" = "主机未能退出该应用。如果它是由其他设备启动的，请在该设备上退出。";
 "active_stream" = "串流进行中";
 "go_back_to_window" = "回到窗口";
 "force_quit" = "强制结束";

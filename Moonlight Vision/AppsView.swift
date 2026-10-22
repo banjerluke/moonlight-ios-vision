@@ -278,22 +278,52 @@ struct AppButtonView: View {
     let app: TemporaryApp
     let action: () -> Void
     
+    @State private var isStopping = false
+    @State private var showStopFailed = false
+
+    private var isRunning: Bool { app.id == host.currentGame }
+
     var body: some View {
-        Button(app.name ?? viewModel.localized("unknown"), action: action)
-            .badge(Text(app.id == host.currentGame ? viewModel.localized("running") : ""))
-            .contextMenu {
-                if app.id == host.currentGame {
-                    Button {
-                        let httpManager = HttpManager(host: app.host())
-                        let httpResponse = HttpResponse()
-                        let quitRequest = HttpRequest(for: httpResponse, with: httpManager?.newQuitAppRequest())
-                        Task {
-                            httpManager?.executeRequestSynchronously(quitRequest)
-                        }
-                    } label: {
+        HStack {
+            Button(app.name ?? viewModel.localized("unknown"), action: action)
+                .badge(Text(isRunning ? viewModel.localized("running") : ""))
+
+            if isRunning {
+                // A non-default style keeps this tappable on its own inside the list row.
+                Button(role: .destructive, action: stop) {
+                    if isStopping {
+                        ProgressView()
+                    } else {
                         Label(viewModel.localized("stop"), systemImage: "stop.circle")
                     }
                 }
+                .buttonStyle(.bordered)
+                .disabled(isStopping)
             }
+        }
+        .contextMenu {
+            if isRunning {
+                Button(action: stop) {
+                    Label(viewModel.localized("stop"), systemImage: "stop.circle")
+                }
+            }
+        }
+        .alert(viewModel.localized("stop_failed_title"), isPresented: $showStopFailed) {
+            Button(viewModel.localized("got_it"), role: .cancel) {}
+        } message: {
+            Text(viewModel.localized("stop_failed_message"))
+        }
+    }
+
+    private func stop() {
+        guard !isStopping else { return }
+        isStopping = true
+        Task {
+            let stopped = await viewModel.quitRunningApp(on: host)
+            isStopping = false
+            if !stopped {
+                showStopFailed = true
+            }
+        }
     }
 }

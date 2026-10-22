@@ -539,6 +539,33 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
         discoveryManager?.resumeDiscovery(for: host)
     }
 
+    /// Quits the host's running app without opening a stream. Returns false if the host
+    /// refused or still reports a game running afterwards.
+    func quitRunningApp(on host: TemporaryHost) async -> Bool {
+        let httpManager = HttpManager(host: host)
+        let quitResponse = HttpResponse()
+        let quitRequest = HttpRequest(for: quitResponse, with: httpManager?.newQuitAppRequest())
+
+        discoveryManager?.pauseDiscovery(for: host)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                httpManager?.executeRequestSynchronously(quitRequest)
+                continuation.resume()
+            }
+        }
+        discoveryManager?.resumeDiscovery(for: host)
+
+        guard quitResponse.statusCode == 200 else {
+            print("quitRunningApp: quit request failed: \(quitResponse.statusCode) \(quitResponse.statusMessage ?? "")")
+            return false
+        }
+
+        // GFE answers 200 even when it refuses to quit an app another client started,
+        // so confirm with fresh server info (this also clears the "Running" badge).
+        await updateHost(host: host, force: true)
+        return host.currentGame == nil || host.currentGame == "0"
+    }
+
     func refreshAppsFor(host: TemporaryHost) async {
         print("refreshAppsFor - Refreshing apps for host: \(host.name)")
         discoveryManager?.pauseDiscovery(for: host)
