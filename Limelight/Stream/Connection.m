@@ -542,22 +542,27 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
             dispatch_semaphore_signal(stopSem);
         });
 
+        void (^pendingCompletion)(void) = completion;
         long result = dispatch_semaphore_wait(stopSem, dispatch_time(DISPATCH_TIME_NOW, 10LL * NSEC_PER_SEC));
         if (result != 0) {
             Log(LOG_E, @"[Connection] LiStopConnection() timed out after 10s.");
             LiInterruptConnection();
-            [initLock unlock];
-            if (completion) {
-                dispatch_async(dispatch_get_main_queue(), ^{ completion(); });
+
+            // Let the UI move on, but keep initLock held until LiStopConnection()
+            // really returns so the next connection can't start on top of it.
+            if (pendingCompletion) {
+                dispatch_async(dispatch_get_main_queue(), pendingCompletion);
+                pendingCompletion = nil;
             }
-            return;
+            dispatch_semaphore_wait(stopSem, DISPATCH_TIME_FOREVER);
+            Log(LOG_I, @"[Connection] LiStopConnection() returned after timeout.");
         }
 
-        [initLock unlock];
         if (renderer == self->_instanceRenderer) renderer = nil;
         if (_callbacks == self->_instanceCallbacks) _callbacks = nil;
-        if (completion) {
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(); });
+        [initLock unlock];
+        if (pendingCompletion) {
+            dispatch_async(dispatch_get_main_queue(), pendingCompletion);
         }
     });
 }
