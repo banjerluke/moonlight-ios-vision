@@ -107,10 +107,6 @@ inline float3 pqInv(float3 p) {
     return float3(pqInv(p.r), pqInv(p.g), pqInv(p.b));
 }
 
-inline float roundedRectSDF(float2 centerPos, float2 size, float radius) {
-    return length(max(abs(centerPos) - size + radius, 0.0)) - radius;
-}
-
 inline float3 rec709ToLinear(float3 c) {
     // Apple's ColorSync uses a gamma of 1.961 for Rec.709 video, which causes the famous "QuickTime gamma shift".
     // To match UIKit's AVSampleBufferDisplayLayer exactly, we must use the same 1.961 gamma curve
@@ -390,110 +386,6 @@ fragment half4 copyFragmentShaderHEVC_EDR(
             return half4(half3(testColor), 1.0h);
         }
     }
-
-    return half4(half3(finalColor), 1.0h);
-}
-
-// MARK: - UIKit Shaders (Clean Pass-Through with Shader-Based Rounded Corners)
-fragment half4 copyFragmentShaderHDR_EDR_UIKit(
-    CopyVertexOut in [[stage_in]],
-    texture2d<float> yTex [[texture(0)]],
-    texture2d<float> cbcrTex [[texture(1)]],
-    constant HDRParams &params [[buffer(0)]],
-    constant FullHDRParams &full [[buffer(1)]],
-    constant ColorEnhancementUniforms &enhancements [[buffer(2)]]
-) {
-    constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
-
-    float2 texSize = float2(yTex.get_width(), yTex.get_height());
-    float2 pixelPos = in.uv * texSize;
-    float2 centerPos = pixelPos - (texSize * 0.5);
-    float cornerRadius = 16.0;
-    float dist = roundedRectSDF(centerPos, texSize * 0.5, cornerRadius);
-
-    if (dist > 0.0) {
-        discard_fragment();
-    }
-
-    float ySample = yTex.sample(s, in.uv).r;
-    float2 uvSample = cbcrTex.sample(s, in.uv).rg;
-
-    float3 rgb_nl;
-    if (params.matrixType == 1u) {
-        rgb_nl = (params.isFullRange == 1u)
-            ? decode2020FullRange(ySample, uvSample, params.is10Bit == 1u)
-            : decode2020VideoRange(ySample, uvSample, params.is10Bit == 1u);
-    } else if (params.matrixType == 2u) {
-        rgb_nl = (params.isFullRange == 1u)
-            ? decode601FullRange(ySample, uvSample, params.is10Bit == 1u)
-            : decode601VideoRange(ySample, uvSample, params.is10Bit == 1u);
-    } else {
-        rgb_nl = (params.isFullRange == 1u)
-            ? decode709FullRange(ySample, uvSample, params.is10Bit == 1u)
-            : decode709VideoRange(ySample, uvSample, params.is10Bit == 1u);
-    }
-
-    float3 finalColor;
-    if (params.isPQ == 1u) {
-        float3 linearNits = pqInv(clamp(rgb_nl, 0.0, 1.0));
-        finalColor = linearNits / PQ_REFERENCE_WHITE_NITS;
-        finalColor *= max(full.pqExposure, 0.0);
-    } else {
-        finalColor = rgb_nl;
-    }
-
-    finalColor *= max(full.boost, 0.0);
-    finalColor += max(full.brightness, 0.0);
-
-    ColorEnhancementUniforms eff = enhancements;
-    eff.saturation = enhancements.saturation * full.saturation;
-    eff.contrast   = enhancements.contrast   * full.contrast;
-
-    finalColor = applyVisionProGrading(finalColor, eff);
-    finalColor = (params.isPQ == 1u) ? min(finalColor, float3(20.0)) : clamp(finalColor, 0.0, 1.0);
-
-    return half4(half3(finalColor), 1.0h);
-}
-
-fragment half4 copyFragmentShaderHEVC_EDR_UIKit(
-    CopyVertexOut in [[stage_in]],
-    texture2d<half> rgbTex [[texture(0)]],
-    constant HDRParams &params [[buffer(0)]],
-    constant FullHDRParams &full [[buffer(1)]],
-    constant ColorEnhancementUniforms &enhancements [[buffer(2)]]
-) {
-    constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
-
-    float2 texSize = float2(rgbTex.get_width(), rgbTex.get_height());
-    float2 pixelPos = in.uv * texSize;
-    float2 centerPos = pixelPos - (texSize * 0.5);
-    float cornerRadius = 16.0;
-    float dist = roundedRectSDF(centerPos, texSize * 0.5, cornerRadius);
-
-    if (dist > 0.0) {
-        discard_fragment();
-    }
-
-    float3 rgb_nl = float3(rgbTex.sample(s, in.uv).rgb);
-
-    float3 finalColor;
-    if (params.isPQ == 1u) {
-        float3 linearNits = pqInv(clamp(rgb_nl, 0.0, 1.0));
-        finalColor = linearNits / PQ_REFERENCE_WHITE_NITS;
-        finalColor *= max(full.pqExposure, 0.0);
-    } else {
-        finalColor = rgb_nl;
-    }
-
-    finalColor *= max(full.boost, 0.0);
-    finalColor += max(full.brightness, 0.0);
-
-    ColorEnhancementUniforms eff = enhancements;
-    eff.saturation = enhancements.saturation * full.saturation;
-    eff.contrast   = enhancements.contrast   * full.contrast;
-
-    finalColor = applyVisionProGrading(finalColor, eff);
-    finalColor = (params.isPQ == 1u) ? min(finalColor, float3(20.0)) : clamp(finalColor, 0.0, 1.0);
 
     return half4(half3(finalColor), 1.0h);
 }

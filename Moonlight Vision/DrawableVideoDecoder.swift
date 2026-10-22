@@ -20,6 +20,7 @@ import MetalKit
 import QuartzCore // For CADisplayLink
 import RealityKit
 import SwiftUI
+import Synchronization
 import VideoToolbox
 import CoreFoundation
 
@@ -62,6 +63,16 @@ let kCVImageBufferColorPrimaries_ITU_R_709_2 = "ITU_R_709_2" as CFString
 let kCVImageBufferColorPrimaries_SMPTE_C = "SMPTE_C" as CFString
 let kCVImageBufferYCbCrMatrix_ITU_R_709_2 = "ITU_R_709_2" as CFString
 
+/// A Bool written on the main thread and read per frame on the VT output thread.
+final class ThreadSafeFlag: Sendable {
+    private let storage: Atomic<Bool>
+    init(_ value: Bool) { storage = Atomic(value) }
+    var value: Bool {
+        get { storage.load(ordering: .relaxed) }
+        set { storage.store(newValue, ordering: .relaxed) }
+    }
+}
+
 // MARK: - VideoDecoderRenderer
 
 @objc
@@ -69,7 +80,6 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     // MARK: - Properties
 
     private var callbacks: ConnectionCallbacks
-    private var streamAspectRatio: Float
 
     let callbackToRender: @MainActor (TextureResource.DrawableQueue, TextureResource.DrawableQueue?, (Int, Int)?) -> Void
     let debugInfoCallback: (@MainActor (String) -> Void)?
@@ -87,8 +97,9 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     /// If true, we'll do pacing logic in displayLink
     private var framePacing: Bool = false
 
-    /// Store parameter set data for H.264 / HEVC
-    private var parameterSetBuffers: [[UInt8]] = []
+    /// Parameter sets (VPS/SPS/PPS) collected for the next IDR's format description.
+    /// NSData keeps each buffer at a stable address while CoreMedia reads it.
+    private var parameterSetBuffers: [NSData] = []
 
     /// HDR metadata
     private var masteringDisplayColorVolume: Data?
@@ -103,25 +114,43 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     /// "Lowest Latency": a dedicated thread decodes each frame as soon as it is reassembled
     /// instead of waiting for the next display-link tick on the main thread.
     private var decodeThread: Thread?
-    /// Serialises frame submission (decode thread or display link) with stop() and setHdrMode(),
-    /// which the library calls from its own threads.
-    private let decodeLock = NSLock()
-    private var acceptingFrames = false
     /// Signalled when the decode thread exits, so stop() can wait for it.
     private var decodeThreadExited: DispatchSemaphore?
 
-    private let texture: TextureResource
-    private var outTexture: MTLTexture?
-    private var region = MTLRegionMake2D(0, 0, 1000, 1000)
     var textureCache: CVMetalTextureCache?
     var drawableQueue: TextureResource.DrawableQueue?
     var ambilightQueue: TextureResource.DrawableQueue?
     var enableAmbilight: Bool = true
 
-    var session: VTDecompressionSession?
-    var decoderCallback: VTDecompressionOutputCallbackRecord
+    private var session: VTDecompressionSession?
+    private var decoderCallback: VTDecompressionOutputCallbackRecord
+    /// Full-range flag from the current format description, for pixel formats that don't encode
+    /// the range. Written before the session that reads it is created.
+    private var formatIsFullRange = false
+
+    /// Guards the decode-side state (session, formatDesc, parameter sets, HDR metadata, isStopped).
+    /// submitDecodeBuffer runs on the display link (main) or the decode thread; setHdrMode and stop()
+    /// run on library threads. Never taken on the VT output thread, so draining a session under it
+    /// can't deadlock.
+    private let decodeLock = NSLock()
+    private var isStopped = false
     
     private let inflightSemaphore = DispatchSemaphore(value: 3)
+
+    /// Checked on the VT output thread before each frame touches the drawable queues.
+    private let renderGate = Atomic<Bool>(true)
+
+    /// Per-frame render gate. Closing it makes decoded frames drop instead of rendering; stop()
+    /// closes it first thing, and stream teardown can close it earlier from any thread.
+    var isRenderingEnabled: Bool {
+        get { renderGate.load(ordering: .acquiring) }
+        set { renderGate.store(newValue, ordering: .releasing) }
+    }
+
+    func closeRenderGate() {
+        isRenderingEnabled = false
+    }
+
     lazy var mtlDevice: MTLDevice = {
         guard let device = MTLCreateSystemDefaultDevice() else {
             fatalError()
@@ -131,20 +160,20 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
 
     private lazy var commandQueue: MTLCommandQueue? = mtlDevice.makeCommandQueue()
 
-    private var imagePlaneVertexBuffer: MTLBuffer?
-
     private var hdrEnabled: Bool
-    private var hdrMetadata: SS_HDR_METADATA = SS_HDR_METADATA()
 
+    // The providers below are called per frame on the VT output thread, so they must not touch
+    // main-actor state; read from a thread-safe snapshot such as ThreadSafeFlag instead.
     private var enhancementsProvider: (() -> (Float, Float, Float))? = nil
     private var isVolumeModeProvider: (() -> Bool)? = nil
     private var enableAmbilightProvider: (() -> Bool)? = nil
 
     private var copyPipelineState: MTLRenderPipelineState?
-    private var copyPipelineFormat: MTLPixelFormat?
     private var copyPipelineStateYUV: MTLRenderPipelineState?
     private var lastCopyFragment: String?
     private var ambilightPipelineState: MTLRenderPipelineState?
+
+    private var pixelFormatTraits: PixelFormatTraits?
 
     private var firstFrameEmitted = false
     private var lastAmbilightLogTime = Date.distantPast
@@ -153,9 +182,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     // MARK: - Initialization
 
     init(
-        texture: TextureResource,
         callbacks: ConnectionCallbacks,
-        aspectRatio: Float,
         useFramePacing: Bool,
         enableHDR: Bool = false,
         hdrSettingsProvider: (() -> HDRParams)? = nil,
@@ -171,9 +198,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
             kCVPixelFormatType_64RGBAHalf :
             kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
 
-        self.texture = texture
         self.callbacks = callbacks
-        streamAspectRatio = aspectRatio
         framePacing = useFramePacing
         self.hdrEnabled = enableHDR
         self.hdrSettingsProvider = hdrSettingsProvider
@@ -198,7 +223,6 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         }
 
         super.init()
-        decoderCallback.decompressionOutputRefCon = Unmanaged.passUnretained(self).toOpaque()
     }
 
     func decompressionOutputCallback(
@@ -210,7 +234,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         presentationTimeStamp _: CMTime,
         presentationDuration _: CMTime?
     ) {
-        guard let imageBuffer = imageBuffer else { return }
+        guard let imageBuffer = imageBuffer, isRenderingEnabled else { return }
         
         if inflightSemaphore.wait(timeout: .now()) != .success {
             return
@@ -237,34 +261,14 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         let pf = CVPixelBufferGetPixelFormatType(imageBuffer)
         let planeCount = CVPixelBufferGetPlaneCount(imageBuffer)
 
-        /// 10-bit YUV from VT is almost always HDR (PQ/HLG) in this pipeline; 8-bit is SDR — do **not** key off `hdrEnabled`.
-        let looksLikeBt2020TenBitStream: Bool = {
-            switch pf {
-            case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
-                 kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
-                 kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange,
-                 kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarFullRange_compat,
-                 kCVPixelFormatType_420YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_420YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossy_422YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossless_422YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossy_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_Lossless_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_444YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_444YpCbCr10PackedBiPlanarVideoRange:
-                return true
-            default:
-                return false
-            }
-        }()
+        let traits: PixelFormatTraits
+        if let cached = pixelFormatTraits, cached.pixelFormat == pf {
+            traits = cached
+        } else {
+            traits = PixelFormatTraits(pixelFormat: pf)
+            pixelFormatTraits = traits
+        }
+        let looksLikeBt2020TenBitStream = traits.isTenBit
 
         // PQ must follow the **frame** transfer function. Never force PQ just because the user enabled
         // "HDR display mode" — that was decoding SDR streams through pqInv() (too dark) while true PQ
@@ -320,32 +324,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
             matrixType = looksLikeBt2020TenBitStream ? 1 : 0
         }
 
-        let isFullRangeSource: Bool = {
-            switch pf {
-            case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr8BiPlanarFullRange,
-                 kCVPixelFormatType_444YpCbCr8BiPlanarFullRange,
-                 kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_Lossy_420YpCbCr8BiPlanarFullRange,
-                 kCVPixelFormatType_Lossless_420YpCbCr8BiPlanarFullRange,
-                 kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarFullRange_compat,
-                 kCVPixelFormatType_420YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_Lossy_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_Lossless_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_444YpCbCr10PackedBiPlanarFullRange:
-                return true
-            default:
-                // formatDesc is swapped on the submit thread at each IDR; read it once.
-                if let desc = formatDesc {
-                    return CVMetalHelpers.getIsFullRangeForVideoFormat(desc)
-                }
-                return false
-            }
-        }()
+        let isFullRangeSource = traits.isFullRange ?? formatIsFullRange
 
         guard
             let drawable = try? drawableQueue?.nextDrawable()
@@ -353,33 +332,12 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
             commandBuffer.commit()
             return
         }
-        
-        if hdrEnabled {
-            updateHDRMetadata()
-        }
 
-        var isBiPlanar = false
-        var yFormat: MTLPixelFormat = .invalid
-        var cbcrFormat: MTLPixelFormat = .invalid
-
-        if planeCount >= 2 {
-            let srcMetalFormats = CVMetalHelpers.getTextureTypesForFormat(pf)
-            if srcMetalFormats.count > 0 { yFormat = srcMetalFormats[0] }
-            if srcMetalFormats.count > 1 { cbcrFormat = srcMetalFormats[1] }
-            isBiPlanar = (cbcrFormat != .invalid)
-            
-            if hdrEnabled {
-                yFormat = .r16Unorm
-                cbcrFormat = .rg16Unorm
-                isBiPlanar = true
-            } else {
-                // Avoid private "secret" SDR texture formats that may apply
-                // undocumented color transforms. Use explicit YUV planes instead.
-                yFormat = .r8Unorm
-                cbcrFormat = .rg8Unorm
-                isBiPlanar = true
-            }
-        }
+        // Avoid private "secret" SDR texture formats that may apply
+        // undocumented color transforms. Use explicit YUV planes instead.
+        let isBiPlanar = planeCount >= 2
+        let yFormat: MTLPixelFormat = hdrEnabled ? .r16Unorm : .r8Unorm
+        let cbcrFormat: MTLPixelFormat = hdrEnabled ? .rg16Unorm : .rg8Unorm
 
         if !firstFrameEmitted {
             let fmtStr = CVMetalHelpers.coreVideoPixelFormatToStr[pf] ?? "\(pf)"
@@ -392,26 +350,17 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
 
         let fragment: String = isBiPlanar ? "copyFragmentShaderHDR_EDR" : "copyFragmentShaderHEVC_EDR"
 
-        if isBiPlanar {
-            if copyPipelineStateYUV == nil || lastCopyFragment != fragment {
-                copyPipelineStateYUV = buildCopyPipeline(fragment: fragment)
-                lastCopyFragment = fragment
-                if copyPipelineStateYUV == nil {
-                    print("DrawableVideoDecoder: Failed to build YUV pipeline")
-                    commandBuffer.commit()
-                    return
-                }
-            }
+        let pipelineState: MTLRenderPipelineState
+        if let cached = isBiPlanar ? copyPipelineStateYUV : copyPipelineState, lastCopyFragment == fragment {
+            pipelineState = cached
+        } else if let built = buildCopyPipeline(fragment: fragment) {
+            if isBiPlanar { copyPipelineStateYUV = built } else { copyPipelineState = built }
+            lastCopyFragment = fragment
+            pipelineState = built
         } else {
-            if copyPipelineState == nil || lastCopyFragment != fragment {
-                copyPipelineState = buildCopyPipeline(fragment: fragment)
-                lastCopyFragment = fragment
-                if copyPipelineState == nil {
-                    print("DrawableVideoDecoder: Failed to build single-plane pipeline")
-                    commandBuffer.commit()
-                    return
-                }
-            }
+            print("DrawableVideoDecoder: Failed to build \(isBiPlanar ? "YUV" : "single-plane") pipeline")
+            commandBuffer.commit()
+            return
         }
 
         let renderPassDescriptor = MTLRenderPassDescriptor()
@@ -454,7 +403,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                 return
             }
 
-            renderEncoder.setRenderPipelineState(copyPipelineStateYUV!)
+            renderEncoder.setRenderPipelineState(pipelineState)
             renderEncoder.setFragmentTexture(yTex, index: 0)
             renderEncoder.setFragmentTexture(cbcrTex, index: 1)
         } else {
@@ -473,42 +422,14 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                 return
             }
 
-            renderEncoder.setRenderPipelineState(copyPipelineState!)
+            renderEncoder.setRenderPipelineState(pipelineState)
             renderEncoder.setFragmentTexture(sourceTexture, index: 0)
         }
-
-        let is10BitSource: Bool = {
-            switch pf {
-            case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
-                 kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
-                 kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange,
-                 kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarFullRange_compat,
-                 kCVPixelFormatType_420YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_420YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossy_422YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossless_422YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossy_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_Lossless_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_444YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_444YpCbCr10PackedBiPlanarVideoRange:
-                return true
-            default:
-                return false
-            }
-        }()
 
         struct ShaderHDRParams { var is10Bit: UInt32; var isFullRange: UInt32; var isPQ: UInt32; var matrixType: UInt32; var primariesType: UInt32; var isTargetDisplayP3: UInt32 }
         
         var shaderParams = ShaderHDRParams(
-            is10Bit: is10BitSource ? 1 : 0,
+            is10Bit: traits.isTenBit ? 1 : 0,
             isFullRange: isFullRangeSource ? 1 : 0,
             isPQ: isPQ ? 1 : 0,
             matrixType: matrixType,
@@ -590,11 +511,13 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                 }
             }
             
-            ambDrawable.present()
+            commandBuffer.present(ambDrawable)
         }
 
+        // Present via the command buffer so RealityKit only sees the drawables once the GPU work
+        // above has completed; a bare present() hands over textures the GPU may still be writing.
+        commandBuffer.present(drawable)
         commandBuffer.commit()
-        drawable.present()
 
         if !firstFrameEmitted {
             firstFrameEmitted = true
@@ -651,8 +574,6 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                 }
             }()
 
-            region = MTLRegionMake2D(0, 0, videoWidth, videoHeight)
-
             self.callbackToRender(self.drawableQueue!, self.ambilightQueue, (videoWidth, videoHeight))
         }
     }
@@ -698,10 +619,6 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     }
 
     func start() {
-        decodeLock.lock()
-        acceptingFrames = true
-        decodeLock.unlock()
-
         if !framePacing {
             startDecodeThread()
             return
@@ -725,14 +642,24 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
 
     func stop() {
         print("DrawableVideoDecoder: stop()")
+        isRenderingEnabled = false
         displayLink?.invalidate()
         displayLink = nil
 
+        // The display link may still be mid-callback on main, and the decode thread may be mid-submit,
+        // so mark the decoder stopped before draining: a late IDR must not create a fresh session
+        // after this point, and any frame submitted from here on is dropped.
         decodeLock.lock()
-        acceptingFrames = false
+        isStopped = true
         let threadExited = decodeThreadExited
         decodeThreadExited = nil
         decodeThread = nil
+        let oldSession = session
+        session = nil
+        formatDesc = nil
+        parameterSetBuffers.removeAll()
+        masteringDisplayColorVolume = nil
+        contentLightLevelInfo = nil
         decodeLock.unlock()
 
         // The library tears down its frame queue after stop() returns without joining pull-renderer
@@ -744,27 +671,18 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
             }
         }
 
-        decodeLock.lock()
-        defer { decodeLock.unlock() }
-
-        if let session = session {
-            // Let in-flight output callbacks finish before the render state below is torn down.
-            VTDecompressionSessionWaitForAsynchronousFrames(session)
-            VTDecompressionSessionInvalidate(session)
-            self.session = nil
+        // After this no output callback is running or pending, so the render state below is ours.
+        if let oldSession {
+            invalidate(oldSession)
         }
-        
-        formatDesc = nil
-        parameterSetBuffers.removeAll()
-        masteringDisplayColorVolume = nil
-        contentLightLevelInfo = nil
-        
+        pixelFormatTraits = nil
+        formatIsFullRange = false
+
         if let cache = textureCache {
             CVMetalTextureCacheFlush(cache, 0)
         }
         textureCache = nil
         copyPipelineState = nil
-        copyPipelineFormat = nil
         copyPipelineStateYUV = nil
         lastCopyFragment = nil
         
@@ -795,10 +713,8 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                     continue
                 }
                 autoreleasepool {
-                    self.decodeLock.lock()
-                    let result = self.acceptingFrames ? DrSubmitDecodeUnit(du) : DR_OK
-                    self.decodeLock.unlock()
-                    LiCompleteVideoFrame(handle, result)
+                    // submitDecodeBuffer takes decodeLock and drops the frame once stop() has run.
+                    LiCompleteVideoFrame(handle, DrSubmitDecodeUnit(du))
                 }
             }
             print("DrawableVideoDecoder: decode thread exited")
@@ -818,10 +734,9 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                 continue
             }
 
-            // stop() runs on a library thread and may race this main-thread callback.
-            decodeLock.lock()
-            let result = acceptingFrames ? DrSubmitDecodeUnit(du) : DR_OK
-            decodeLock.unlock()
+            // stop() runs on a library thread and may race this main-thread callback;
+            // submitDecodeBuffer takes decodeLock and drops the frame once stop() has run.
+            let result = DrSubmitDecodeUnit(du)
             LiCompleteVideoFrame(handle, result)
 
             if framePacing && frameRate <= 60 {
@@ -845,6 +760,23 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         bufferType: Int32,
         decode decodeUnit: PDECODE_UNIT!
     ) -> Int32 {
+        decodeLock.lock()
+        defer { decodeLock.unlock() }
+
+        guard !isStopped else {
+            // Picture data is ours to free; parameter sets belong to the library.
+            if bufferType == BUFFER_TYPE_PICDATA { free(dataPtr) }
+            return DR_OK
+        }
+        return submitDecodeBufferLocked(dataPtr, length: length, bufferType: bufferType, decodeUnit: decodeUnit)
+    }
+
+    private func submitDecodeBufferLocked(
+        _ dataPtr: UnsafeMutablePointer<UInt8>,
+        length: Int32,
+        bufferType: Int32,
+        decodeUnit: PDECODE_UNIT
+    ) -> Int32 {
         if decodeUnit.pointee.frameType == FRAME_TYPE_IDR {
             if bufferType != BUFFER_TYPE_PICDATA {
                 if bufferType == BUFFER_TYPE_VPS
@@ -852,8 +784,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                     || bufferType == BUFFER_TYPE_PPS
                 {
                     let startLen = (dataPtr[2] == 0x01) ? 3 : 4
-                    let newData = Data(bytes: dataPtr + startLen, count: Int(length) - startLen)
-                    parameterSetBuffers.append([UInt8](newData))
+                    parameterSetBuffers.append(NSData(bytes: dataPtr + startLen, length: Int(length) - startLen))
                 }
                 return DR_OK
             }
@@ -861,7 +792,16 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
             if let formatDesc = recreateFormatDescriptionForIDR(
                 dataPtr: dataPtr, length: length
             ) {
+                // Drain and tear down the previous session before its replacement exists, so
+                // output callbacks never overlap and the old session isn't leaked.
+                let isFirstSession = session == nil
+                if let oldSession = session {
+                    session = nil
+                    invalidate(oldSession)
+                }
+
                 self.formatDesc = formatDesc
+                formatIsFullRange = CVMetalHelpers.getIsFullRangeForVideoFormat(formatDesc)
                 let decoderConfiguration: [String: Any] = [
                     kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder as String: true,
                 ]
@@ -878,17 +818,16 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                     attributes[kCVPixelBufferPixelFormatTypeKey] = decodingFormat
                 }
                 
-                // Every IDR gets a fresh session; release the previous one instead of leaking it.
-                let isFirstSession = session == nil
-                if let oldSession = session {
-                    VTDecompressionSessionWaitForAsynchronousFrames(oldSession)
-                    VTDecompressionSessionInvalidate(oldSession)
-                    session = nil
-                }
-
-                let status = VTDecompressionSessionCreate(allocator: kCFAllocatorDefault, formatDescription: formatDesc, decoderSpecification: decoderConfiguration as CFDictionary, imageBufferAttributes: attributes as CFDictionary, outputCallback: &decoderCallback, decompressionSessionOut: &session)
+                // The session's callback holds a strong reference to us, released in invalidate(_:),
+                // so a late callback can never see a freed decoder.
+                let refCon = Unmanaged.passRetained(self)
+                var outputCallback = decoderCallback
+                outputCallback.decompressionOutputRefCon = refCon.toOpaque()
+                let status = VTDecompressionSessionCreate(allocator: kCFAllocatorDefault, formatDescription: formatDesc, decoderSpecification: decoderConfiguration as CFDictionary, imageBufferAttributes: attributes as CFDictionary, outputCallback: &outputCallback, decompressionSessionOut: &session)
                 guard status == noErr, let session else {
                     print("Failed to create video decompression session: \(status)")
+                    session = nil
+                    refCon.release()
                     free(dataPtr)
                     return DR_NEED_IDR
                 }
@@ -913,13 +852,13 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
             return DR_NEED_IDR
         }
 
+        // Takes ownership of dataPtr, including on failure.
         guard let sampleBuffer = createSampleBuffer(
             dataPtr: dataPtr,
             length: Int(length),
             formatDesc: formatDesc,
             decodeUnit: decodeUnit
         ) else {
-            // createSampleBuffer has already released dataPtr (directly or via its block buffer).
             return DR_NEED_IDR
         }
 
@@ -945,20 +884,23 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
 
     // MARK: - Helper: Recreate Format Description for IDR
 
+    /// Waits for the session's in-flight frames, then tears it down and drops the decoder
+    /// reference its output callback held.
+    private func invalidate(_ session: VTDecompressionSession) {
+        VTDecompressionSessionWaitForAsynchronousFrames(session)
+        VTDecompressionSessionInvalidate(session)
+        Unmanaged.passUnretained(self).release()
+    }
+
     private func recreateFormatDescriptionForIDR(
         dataPtr: UnsafeMutablePointer<UInt8>,
         length: Int32
     ) -> CMVideoFormatDescription? {
         formatDesc = nil
 
-        // Parameter sets are resent with every IDR; don't let them pile up across IDRs.
-        defer { parameterSetBuffers.removeAll(keepingCapacity: true) }
-
         if (videoFormat & VIDEO_FORMAT_MASK_H264) != 0 {
-            guard parameterSetBuffers.count >= 2 else { return nil }
             return createH264FormatDescription()
         } else if (videoFormat & VIDEO_FORMAT_MASK_H265) != 0 {
-            guard parameterSetBuffers.count >= 3 else { return nil }
             return createHEVCFormatDescription()
         } else if (videoFormat & VIDEO_FORMAT_MASK_AV1) != 0 {
             let frameData = Data(bytesNoCopy: dataPtr, count: Int(length), deallocator: .none)
@@ -968,25 +910,31 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         }
     }
 
-    private func createH264FormatDescription() -> CMVideoFormatDescription? {
-        let parameterSetCount = parameterSetBuffers.count
-        var paramPtrs: [UnsafePointer<UInt8>] = []
-        var paramSizes: [Int] = []
+    /// Hands the collected parameter sets to the caller and clears them, so the next IDR
+    /// starts from an empty list.
+    private func takeParameterSets() -> [NSData] {
+        let parameterSets = parameterSetBuffers
+        parameterSetBuffers.removeAll()
+        return parameterSets
+    }
 
-        for (index, ps) in parameterSetBuffers.enumerated() {
-            paramPtrs.append(UnsafePointer<UInt8>(parameterSetBuffers[index]))
-            paramSizes.append(ps.count)
-        }
+    private func createH264FormatDescription() -> CMVideoFormatDescription? {
+        let parameterSets = takeParameterSets()
+        guard parameterSets.count >= 2 else { return nil } // SPS + PPS
+        let paramPtrs = parameterSets.map { $0.bytes.assumingMemoryBound(to: UInt8.self) }
+        let paramSizes = parameterSets.map(\.length)
 
         var fromatDesc: CMFormatDescription?
-        let status = CMVideoFormatDescriptionCreateFromH264ParameterSets(
-            allocator: kCFAllocatorDefault,
-            parameterSetCount: parameterSetCount,
-            parameterSetPointers: paramPtrs,
-            parameterSetSizes: paramSizes,
-            nalUnitHeaderLength: Int32(NAL_LENGTH_PREFIX_SIZE),
-            formatDescriptionOut: &fromatDesc
-        )
+        let status = withExtendedLifetime(parameterSets) {
+            CMVideoFormatDescriptionCreateFromH264ParameterSets(
+                allocator: kCFAllocatorDefault,
+                parameterSetCount: parameterSets.count,
+                parameterSetPointers: paramPtrs,
+                parameterSetSizes: paramSizes,
+                nalUnitHeaderLength: Int32(NAL_LENGTH_PREFIX_SIZE),
+                formatDescriptionOut: &fromatDesc
+            )
+        }
 
         if status != noErr {
             print("Failed to create H264 format description: \(status)")
@@ -997,14 +945,10 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     }
 
     private func createHEVCFormatDescription() -> CMVideoFormatDescription? {
-        let parameterSetCount = parameterSetBuffers.count
-        var paramPtrs: [UnsafePointer<UInt8>] = []
-        var paramSizes: [Int] = []
-
-        for ps in parameterSetBuffers {
-            paramPtrs.append(UnsafePointer<UInt8>(ps))
-            paramSizes.append(ps.count)
-        }
+        let parameterSets = takeParameterSets()
+        guard parameterSets.count >= 3 else { return nil } // VPS + SPS + PPS
+        let paramPtrs = parameterSets.map { $0.bytes.assumingMemoryBound(to: UInt8.self) }
+        let paramSizes = parameterSets.map(\.length)
 
         let videoFormatParams = NSMutableDictionary()
 
@@ -1016,15 +960,17 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         }
 
         var formatDesc: CMFormatDescription?
-        let status = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
-            allocator: kCFAllocatorDefault,
-            parameterSetCount: parameterSetCount,
-            parameterSetPointers: paramPtrs,
-            parameterSetSizes: paramSizes,
-            nalUnitHeaderLength: Int32(NAL_LENGTH_PREFIX_SIZE),
-            extensions: videoFormatParams as CFDictionary,
-            formatDescriptionOut: &formatDesc
-        )
+        let status = withExtendedLifetime(parameterSets) {
+            CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+                allocator: kCFAllocatorDefault,
+                parameterSetCount: parameterSets.count,
+                parameterSetPointers: paramPtrs,
+                parameterSetSizes: paramSizes,
+                nalUnitHeaderLength: Int32(NAL_LENGTH_PREFIX_SIZE),
+                extensions: videoFormatParams as CFDictionary,
+                formatDescriptionOut: &formatDesc
+            )
+        }
 
         if status != noErr {
             print("Failed to create HEVC format description: \(status)")
@@ -1286,7 +1232,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                 pointer.advanced(by: offset + 3).pointee = UInt8((index.payloadSize) & 0xFF)
                 offset += 4
 
-                pointer.advanced(by: offset).update(from: bytes.advanced(by: index.payloadStartOffset), count: blockBufferSize - offset)
+                pointer.advanced(by: offset).update(from: bytes.advanced(by: index.payloadStartOffset), count: index.payloadSize)
                 offset += index.payloadSize
             }
         }
@@ -1327,13 +1273,13 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
 
         // Frames may be submitted concurrently from the decode thread, which reads this metadata.
         decodeLock.lock()
-        let metadataChanged = displayMetadata != masteringDisplayColorVolume || lightMetadata != contentLightLevelInfo
+        let metadataChanged = displayMetadata != masteringDisplayColorVolume
+            || lightMetadata != contentLightLevelInfo
         masteringDisplayColorVolume = displayMetadata
         contentLightLevelInfo = lightMetadata
         decodeLock.unlock()
 
         if metadataChanged {
-            updateHDRMetadata()
             LiRequestIdrFrame()
         }
     }
@@ -1358,65 +1304,73 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
 
         return try? mtlDevice.makeRenderPipelineState(descriptor: pipelineDescriptor)
     }
+}
 
-    private func convertBigEndianUInt16ToFloat(_ value: UInt16) -> Float {
-        let hostValue = CFSwapInt16BigToHost(value)
-        return Float(hostValue)
-    }
+// MARK: - Pixel Format Traits
 
-    // MARK: - METAL
+/// What the shaders need to know about a VT output pixel format. Classified once per format
+/// change rather than on every frame.
+private struct PixelFormatTraits {
+    let pixelFormat: OSType
+    /// 10-bit YUV from VT is almost always HDR (PQ/HLG) in this pipeline; 8-bit is SDR — do **not** key off `hdrEnabled`.
+    let isTenBit: Bool
+    /// nil when the pixel format doesn't encode the range; the format description decides then.
+    let isFullRange: Bool?
 
-    private let planeVertexData: [Float] = [
-        -1, -1, 0, 1,
-        1, -1, 1, 1,
-        -1, 1, 0, 0,
-        1, 1, 1, 0,
-    ]
+    init(pixelFormat pf: OSType) {
+        pixelFormat = pf
 
-    private func updateHDRMetadata() {
-        if !LiGetHdrMetadata(&hdrMetadata) {
-            print("Failed to fetch HDR metadata from Moonlight")
+        switch pf {
+        case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+             kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
+             kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
+             kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange,
+             kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,
+             kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarVideoRange,
+             kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarVideoRange,
+             kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarFullRange_compat,
+             kCVPixelFormatType_420YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_420YpCbCr10PackedBiPlanarVideoRange,
+             kCVPixelFormatType_Lossy_422YpCbCr10PackedBiPlanarVideoRange,
+             kCVPixelFormatType_Lossless_422YpCbCr10PackedBiPlanarVideoRange,
+             kCVPixelFormatType_Lossy_422YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_Lossless_422YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr10PackedBiPlanarVideoRange,
+             kCVPixelFormatType_444YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_444YpCbCr10PackedBiPlanarVideoRange:
+            isTenBit = true
+        default:
+            isTenBit = false
         }
-    }
-    
-    private func parseMasteringDisplayColorVolume(_ data: Data) {
-        guard data.count == 24 else {
-            print("Invalid metadata length: \(data.count)")
-            return
+
+        switch pf {
+        case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_444YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
+             kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,
+             kCVPixelFormatType_Lossy_420YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_Lossless_420YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarFullRange_compat,
+             kCVPixelFormatType_420YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_Lossy_422YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_Lossless_422YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_444YpCbCr10PackedBiPlanarFullRange:
+            isFullRange = true
+        default:
+            isFullRange = nil
         }
-
-        let displayPrimariesX = [
-            Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 0, as: UInt16.self) })) / 50000.0,
-            Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt16.self) })) / 50000.0,
-            Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 8, as: UInt16.self) })) / 50000.0
-        ]
-        
-        let displayPrimariesY = [
-            Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 2, as: UInt16.self) })) / 50000.0,
-            Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 6, as: UInt16.self) })) / 50000.0,
-            Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 10, as: UInt16.self) })) / 50000.0
-        ]
-        
-        let whitePointX = Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 12, as: UInt16.self) })) / 50000.0
-        let whitePointY = Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 14, as: UInt16.self) })) / 50000.0
-        
-        let maxDisplayLuminance = Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 16, as: UInt16.self) }))
-        let minDisplayLuminance = Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 18, as: UInt16.self) })) / 10000.0
-
-        print("\nHDR Display Metadata:")
-        print("Display Primaries (x,y):")
-        print("Red:    (\(displayPrimariesX[0]), \(displayPrimariesY[0]))")
-        print("Green: (\(displayPrimariesX[1]), \(displayPrimariesY[1]))")
-        print("Blue:  (\(displayPrimariesX[2]), \(displayPrimariesY[2]))")
-        print("White Point: (\(whitePointX), \(whitePointY))")
-        print("Max Display Luminance: \(maxDisplayLuminance) nits")
-        print("Min Display Luminance: \(minDisplayLuminance) nits")
     }
 }
 
 // MARK: - Constants Port
 
-private let NALU_START_PREFIX_SIZE: Int = 3
 private let NAL_LENGTH_PREFIX_SIZE: Int = 4
 
 let VIDEO_FORMAT_H264: Int32 = 0x0001

@@ -25,10 +25,15 @@ class StreamControlState: ObservableObject {
     @Published var isControlPanelVisible: Bool = false
     
     // MARK: - Screen Control
-    @Published var immersiveScale: Float = 0.8
-    @Published var immersivePositionX: Float = 0
-    @Published var immersivePositionY: Float = 1.0
-    @Published var immersivePositionZ: Float = -1.5
+    nonisolated static let defaultImmersiveScale: Float = 0.8
+    nonisolated static let defaultImmersivePosition = SIMD3<Float>(0, 1.0, -1.5)
+    nonisolated static let defaultPinnedStageScale: Float = 5.0
+    nonisolated static let defaultPinnedStageHeight: Float = 0.75
+
+    @Published var immersiveScale: Float = StreamControlState.defaultImmersiveScale
+    @Published var immersivePositionX: Float = StreamControlState.defaultImmersivePosition.x
+    @Published var immersivePositionY: Float = StreamControlState.defaultImmersivePosition.y
+    @Published var immersivePositionZ: Float = StreamControlState.defaultImmersivePosition.z
     @Published var immersionAmount: Float = 0.0
     @Published var isInteractive: Bool = false
     
@@ -47,8 +52,8 @@ class StreamControlState: ObservableObject {
     @Published var isPinnedToStage: Bool = false
     @Published var isPinningTransitioning: Bool = false
     @Published var canPinToStage: Bool = false
-    @Published var pinnedStageScale: Float = 5.0 // Screen scale when pinned (default 5x)
-    @Published var pinnedStageHeight: Float = 0.75 // Vertical offset when pinned (default 0.75m)
+    @Published var pinnedStageScale: Float = StreamControlState.defaultPinnedStageScale // Screen scale when pinned
+    @Published var pinnedStageHeight: Float = StreamControlState.defaultPinnedStageHeight // Vertical offset when pinned
     
     // MARK: - Action Callbacks
     /// Home: push main overlay (stream stays). Stop: full teardown.
@@ -74,33 +79,29 @@ class StreamControlState: ObservableObject {
     
     // MARK: - Audio State
     @Published var isAudioFallbackModeActive: Bool = false
-    @Published var preferUninterruptedAudio: Bool = true
     
     private init() {
         // Load saved immersive screen settings
         let defaults = UserDefaults.standard
-        if let savedScale = defaults.object(forKey: "realitykitImmersiveScale") as? Float {
+        if let savedScale = defaults.object(forKey: .realitykitImmersiveScale) as? Float {
             immersiveScale = savedScale
         }
-        if let savedPosX = defaults.object(forKey: "realitykitImmersivePosX") as? Float,
-           let savedPosY = defaults.object(forKey: "realitykitImmersivePosY") as? Float,
-           let savedPosZ = defaults.object(forKey: "realitykitImmersivePosZ") as? Float {
+        if let savedPosX = defaults.object(forKey: .realitykitImmersivePosX) as? Float,
+           let savedPosY = defaults.object(forKey: .realitykitImmersivePosY) as? Float,
+           let savedPosZ = defaults.object(forKey: .realitykitImmersivePosZ) as? Float {
             immersivePositionX = savedPosX
             immersivePositionY = savedPosY
             immersivePositionZ = savedPosZ
         }
-        if let savedImmersion = defaults.object(forKey: "realitykitImmersionAmount") as? Float {
+        if let savedImmersion = defaults.object(forKey: .realitykitImmersionAmount) as? Float {
             immersionAmount = savedImmersion
         }
         // Load pinned screen settings
-        if let savedPinnedScale = defaults.object(forKey: "realitykitPinnedStageScale") as? Float {
+        if let savedPinnedScale = defaults.object(forKey: .realitykitPinnedStageScale) as? Float {
             pinnedStageScale = savedPinnedScale
         }
-        if let savedPinnedHeight = defaults.object(forKey: "realitykitPinnedStageHeight") as? Float {
+        if let savedPinnedHeight = defaults.object(forKey: .realitykitPinnedStageHeight) as? Float {
             pinnedStageHeight = savedPinnedHeight
-        }
-        if let savedPreferUninterruptedAudio = defaults.object(forKey: "preferUninterruptedAudio") as? Bool {
-            preferUninterruptedAudio = savedPreferUninterruptedAudio
         }
         
         NotificationCenter.default.addObserver(
@@ -112,6 +113,19 @@ class StreamControlState: ObservableObject {
                 self?.isAudioFallbackModeActive = fallbackMode
             }
         }
+    }
+    
+    /// Clears the saved immersive placement and returns the live state to the defaults.
+    func resetImmersiveTransform() {
+        let defaults = UserDefaults.standard
+        for key in SettingsKey.immersiveTransform {
+            defaults.removeObject(forKey: key)
+        }
+        immersiveScale = Self.defaultImmersiveScale
+        immersivePosition = Self.defaultImmersivePosition
+        immersionAmount = 0.0
+        pinnedStageScale = Self.defaultPinnedStageScale
+        pinnedStageHeight = Self.defaultPinnedStageHeight
     }
     
     // MARK: - Computed Properties

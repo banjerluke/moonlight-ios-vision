@@ -18,4 +18,9 @@
 
 - (int)submitDecodeBuffer:(unsigned char *)data length:(int)length bufferType:(int)bufferType decodeUnit:(PDECODE_UNIT)du;
 
+@optional
+// Stop presenting decoded frames right away, from any thread. Stream teardown calls this first,
+// before the connection stops and -stop runs.
+- (void)closeRenderGate;
+
 @end

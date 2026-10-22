@@ -13,6 +13,17 @@
 
 import AppIntents
 
+enum OpenStreamIntentError: Error, CustomLocalizedStringResourceConvertible {
+    case streamConfigurationUnavailable
+
+    var localizedStringResource: LocalizedStringResource {
+        switch self {
+        case .streamConfigurationUnavailable:
+            return "Couldn't prepare the stream. Check that the host has a valid address."
+        }
+    }
+}
+
 @MainActor
 struct OpenMoonlightApp: AppIntent {
     
@@ -31,11 +42,13 @@ struct OpenMoonlightApp: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult {
         app.setHost(host)
-        let config = MainViewModel.shared.stream(app: app)
+        guard (host.activeAddress ?? host.address) != nil else {
+            throw OpenStreamIntentError.streamConfigurationUnavailable
+        }
+        // DummyView launches it through the same path as the app list.
+        MainViewModel.shared.pendingIntentApp = app
         let activity = NSUserActivity(activityType: "dummy")
-//        activity.userInfo = ["some key": config!]
         activity.targetContentIdentifier = "dummy" // IMPORTANT
-        try! activity.setTypedPayload(config!)
         UIApplication.shared.requestSceneSessionActivation(nil, userActivity: activity, options: nil)
         print("perform intent")
         return .result()

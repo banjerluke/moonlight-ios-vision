@@ -22,13 +22,23 @@ struct AppsView: View {
     @State private var nowLoading: String?
     @State private var nowLoadingTimeout: Task<Void, Never>?
     @State private var streamModeOverlayApp: TemporaryApp?
+
+    private var launcher: StreamLauncher {
+        StreamLauncher(
+            viewModel: viewModel,
+            openWindow: openWindow,
+            dismissWindow: dismissWindow,
+            openImmersiveSpace: openImmersiveSpace,
+            dismissImmersiveSpace: dismissImmersiveSpace
+        )
+    }
     
     @Binding
     public var host: TemporaryHost
     
     var body: some View {
         Group {
-            if viewModel.activelyStreaming {
+            if viewModel.streamInProgress {
                 // When stream running in background, show Resume + Stop instead of app list
                 streamInProgressView
             } else {
@@ -49,7 +59,7 @@ struct AppsView: View {
         }
         .navigationTitle(host.name)
         .onAppear() {
-            guard !viewModel.activelyStreaming else { return }
+            guard !viewModel.streamInProgress else { return }
             Task { await viewModel.refreshAppsFor(host: host) }
         }
         .alert(viewModel.localized("close_previous_window"), isPresented: $viewModel.showClassicWindowCloseAlert) {
@@ -63,7 +73,7 @@ struct AppsView: View {
             Text(viewModel.localized("close_realitykit_window_message"))
         }
         .refreshable() {
-            guard !viewModel.activelyStreaming else { return }
+            guard !viewModel.streamInProgress else { return }
             await viewModel.refreshAppsFor(host: host)
         }
         .sheet(item: $streamModeOverlayApp) { app in
@@ -122,36 +132,8 @@ struct AppsView: View {
         nowLoading = appId
         startNowLoadingTimeout()
 
-        // If stale lifecycle state remains after crown/app interruptions, wait briefly and recover.
-        if viewModel.streamState != .idle {
-            await viewModel.waitForTeardown(timeout: 1.2)
-        }
-        if viewModel.streamState != .idle {
-            viewModel.forceResetStreamLifecycleIfNeeded()
-        }
-        if viewModel.activelyStreaming {
-            clearNowLoading()
-            return
-        }
-
-        let cooldown = viewModel.reconnectCooldownRemaining()
-        if cooldown > 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + cooldown + 0.05) {
-                Task {
-                    if viewModel.streamState != .idle {
-                        await viewModel.waitForTeardown()
-                    }
-                    await openAppStream(app: app)
-                }
-            }
-            return
-        }
-
-        if let stale = _UIKitStreamView.controllerReference.object {
-            stale.stopStream()
-            _UIKitStreamView.controllerReference.object = nil
-        }
-        await openAppStream(app: app)
+        await launcher.launch(app)
+        clearNowLoading()
     }
 
     @MainActor
@@ -179,10 +161,7 @@ struct AppsView: View {
         // If stream window/space was closed by system gesture (e.g. crown),
         // no receiver may exist for ResumeStreamFromMenu. Reopen from saved config.
         guard let saved = viewModel.savedStreamConfigForResume else { return }
-        if viewModel.streamState == .idle {
-            viewModel.streamState = .starting
-        }
-        viewModel.activelyStreaming = true
+        viewModel.beginSession(config: saved)
 
         let settings = viewModel.streamSettings
         if settings.renderer == .realitykit && settings.realitykitImmersiveMode {
@@ -201,54 +180,7 @@ struct AppsView: View {
 
     @MainActor
     private func stopStreamFromMainMenu() async {
-        NotificationCenter.default.post(name: Notification.Name("RequestStreamCloseFromMainMenu"), object: nil)
         viewModel.userDidRequestDisconnect()
-        await viewModel.waitForTeardown(timeout: 1.2)
-        if viewModel.streamState != .idle {
-            viewModel.forceResetStreamLifecycleIfNeeded()
-        }
-    }
-
-    private func openAppStream(app: TemporaryApp) async {
-        viewModel.prepareForNewStream()
-
-        guard let config = viewModel.stream(app: app) else {
-            clearNowLoading()
-            return
-        }
-
-        let settings = viewModel.streamSettings
-
-        // Dismiss existing stream windows before opening new one
-        dismissWindow(id: "realitykitStreamingWindow")
-        dismissWindow(id: "classicStreamingWindow")
-
-        if settings.renderer == .realitykit && settings.realitykitImmersiveMode {
-            dismissWindow(id: "mainView")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                Task {
-                    _ = try? await openImmersiveSpace(id: "realitykitImmersiveSpace", value: config)
-                    await MainActor.run { clearNowLoading() }
-                }
-            }
-        } else {
-            Task {
-                await dismissImmersiveSpace()
-                await MainActor.run {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                        if settings.renderer == .realitykit {
-                            openWindow(id: "realitykitStreamingWindow", value: config)
-                        } else {
-                            openWindow(id: "classicStreamingWindow", value: config)
-                        }
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        dismissWindow(id: "mainView")
-                        clearNowLoading()
-                    }
-                }
-            }
-        }
     }
 
     private func clearNowLoading() {

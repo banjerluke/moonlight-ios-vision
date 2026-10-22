@@ -68,9 +68,9 @@ struct MoonlightVisionApp: SwiftUI.App {
                          if let savedConfig = appDelegate.mainViewModel.savedStreamConfigForResume,
                             streamConfig.wrappedValue == nil {
                              // Restore the saved stream config and start streaming
+                             appDelegate.mainViewModel.beginSession(config: savedConfig)
                              streamConfig.wrappedValue = savedConfig
                              appDelegate.mainViewModel.savedStreamConfigForResume = nil
-                             appDelegate.mainViewModel.activelyStreaming = true
                          }
                          // If opening with a new config, clear any saved config
                          if streamConfig.wrappedValue != nil {
@@ -103,9 +103,9 @@ struct MoonlightVisionApp: SwiftUI.App {
                          if let savedConfig = appDelegate.mainViewModel.savedStreamConfigForResume,
                             streamConfig.wrappedValue == nil {
                              // Restore the saved stream config and start streaming
+                             appDelegate.mainViewModel.beginSession(config: savedConfig)
                              streamConfig.wrappedValue = savedConfig
                              appDelegate.mainViewModel.savedStreamConfigForResume = nil
-                             appDelegate.mainViewModel.activelyStreaming = true
                          }
                          // If opening with a new config, clear any saved config
                          if streamConfig.wrappedValue != nil {
@@ -127,9 +127,9 @@ struct MoonlightVisionApp: SwiftUI.App {
                         if let savedConfig = appDelegate.mainViewModel.savedStreamConfigForResume,
                            streamConfig.wrappedValue == nil {
                             // Restore the saved stream config and start streaming
+                            appDelegate.mainViewModel.beginSession(config: savedConfig)
                             streamConfig.wrappedValue = savedConfig
                             appDelegate.mainViewModel.savedStreamConfigForResume = nil
-                            appDelegate.mainViewModel.activelyStreaming = true
                         }
                         // If opening with a new config, clear any saved config
                         if streamConfig.wrappedValue != nil {

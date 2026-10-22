@@ -13,6 +13,7 @@
 
 import SwiftUI
 import RealityKit
+import Metal
 import simd
 import GameController
 import ARKit
@@ -36,17 +37,20 @@ struct RealityKitStreamView: View {
     
     var body: some View {
         if let config = streamConfig {
-            if config.sessionUUID == viewModel.activeSessionToken {
+            if config.sessionUUID == viewModel.activeSessionToken,
+               let session = viewModel.activeSession,
+               session.config.sessionUUID == config.sessionUUID {
                 _RealityKitStreamView(
+                    session: session,
                     streamConfig: Binding<StreamConfiguration>(
                         get: { config },
                         set: { streamConfig = $0 }
                     ),
                     needsHdr: needsHdr,
-                    isImmersive: isImmersive,
-                    swapAction: { }
+                    isImmersive: isImmersive
                 )
-                .id(config.sessionUUID)
+                // One view per session, so resuming with a new session starts it from onAppear.
+                .id(ObjectIdentifier(session))
             } else {
                 // Ghost/stale window: a different session UUID is active.
                 // Redirect to main menu and close this window.
@@ -125,7 +129,6 @@ struct _RealityKitStreamView: View {
     @Binding var streamConfig: StreamConfiguration
     var needsHdr: Bool
     var isImmersive: Bool
-    let swapAction: () -> Void
     
     // Volume window positioning (non-immersive only)
     @State private var volumeHeight: Float = 0
@@ -133,24 +136,15 @@ struct _RealityKitStreamView: View {
     @State private var volumeYLimits: ClosedRange<Float> = -0.5...0.5
     @State private var volumeZLimits: ClosedRange<Float> = -0.5...0.5
     
-    @State private var streamMan: StreamManager?
+    @ObservedObject private var session: StreamSession
     /// Non-nil when the stream renders through the system media pipeline
     /// (AVSampleBufferVideoRenderer + VideoMaterial) instead of the Metal texture path.
     @State private var systemRenderer: SystemVideoRenderer?
     /// Created once per stream: an AVSampleBufferVideoRenderer feeds a single output,
     /// so instantiating a second VideoMaterial for it steals the first one's video.
     @State private var systemVideoMaterial: VideoMaterial?
-    @State private var streamOpQueue = OperationQueue()
-    @State private var controllerSupport: ControllerSupport?
     @StateObject var connectionCallbacks: ObservableConnectionManager = .init()
     @State private var lastStreamErrorMessage: String? = nil
-    
-    /// Auto-reconnect: attempt count (0 = fresh, 1..=max = retrying). Reset on first frame.
-    @State private var reconnectAttemptCount: Int = 0
-    @State private var isReconnecting: Bool = false
-    @State private var isPerformingReconnectTeardown: Bool = false  // Ignore ConnectionTerminatedForRetry during this
-    private let maxReconnectAttempts = 3
-    private let reconnectDelaySeconds: TimeInterval = 2.5
     
     // Immersive Environment
     @State private var immersiveEnvironment = ImmersiveEnvironment()
@@ -182,7 +176,6 @@ struct _RealityKitStreamView: View {
     @State private var surfaceMaterial: ShaderGraphMaterial?
     
     @State private var curveAnimationMultiplier: Float = 1.0
-    @State private var animationTimer: Timer?
     
     @State private var sliderCurvature: Float = 0.0
     @State private var tiltAngle: Float = 0.0
@@ -198,6 +191,8 @@ struct _RealityKitStreamView: View {
         params: HDRParams(boost: 1.0, contrast: 1.0, saturation: 1.0, brightness: 0.0, pqExposure: 1.0, mode: 0)
     )
     @StateObject private var hdrParams = HDRTestParams()
+    /// Snapshot of reactiveLightingEnabled for the decoder's VT output thread.
+    @State private var safeAmbilightEnabled = ThreadSafeFlag(false)
 
     @State private var showVirtualKeyboard = false
     @State private var hideControls: Bool = false
@@ -209,16 +204,12 @@ struct _RealityKitStreamView: View {
     
     @State private var hideTimer: Timer?
     @State private var controlsEntity: Entity?
-    @State private var shouldClose = false
     @FocusState private var isInputFocused: Bool
-    @State private var hasPerformedTeardown = false
-    @State private var needsResume = false
     // spatialAudioMode is now in viewModel.streamSettings.spatialAudioMode
     @State private var statsOverlayText: String = ""
     @State private var statsTimer: Timer?
     @State private var showScaleHUD: Bool = false
     @State private var showModeLabel: Bool = false
-    @State private var modeLabelTimer: Timer?
     @State private var controlsHighlighted: Bool = false
     @State private var immersiveSpaceSceneID: String?
     @State private var showMenuPanel = false
@@ -227,15 +218,12 @@ struct _RealityKitStreamView: View {
     @State private var menuBaseWidth: Float = 0
     @State private var inputScaleInitialized = false
     @State private var inputBaseWidth: Float = 0
-    @State private var swapInProgress = false
     @State private var menuPanelInstanceID = UUID()
     @State private var showDimmingPicker = false
     @State private var inputMode: InputMode = .gazeControl // Three-mode input toggle (default: gaze control)
     @State private var gazeController = GazeInputController()
 
     private let headStorage = HeadPositionStorage()
-    
-    @State private var renderGateOpen: Bool = true
     
     private let attachmentLayoutAspectBox = MutableBox<Float>(-1)
     private let attachmentLayoutFpsMouseBox = MutableBox<Bool?>(nil)
@@ -248,35 +236,12 @@ struct _RealityKitStreamView: View {
     @State private var gestureInitialScale: Float? = nil
     @State private var targetScale: Float = 0.8
     @State private var scaleHUDFadeTimer: Timer?
-    @State private var environmentFadeTimer: Timer?
     
     @State private var dimmerDome: ModelEntity?
     @State private var dimmerDomePurple: ModelEntity?
-    @State private var purpleGradientTextureColors: TextureResource?
-    @State private var purpleGradientTexturePurpleBlack: TextureResource?
-    @State private var eclipseGradientTexture: TextureResource?
-    @State private var twilightGradientTexture: TextureResource?
-    @State private var dawnGradientTexture: TextureResource?
-    @State private var sunriseGradientTexture: TextureResource?
-    @State private var woodlandGradientTexture: TextureResource?
-    @State private var desertGradientTexture: TextureResource?
-    @State private var duskHDRTexture: TextureResource?
-    @State private var moonlightCycleTimer: Timer?
-    @State private var moonlightCyclePhase: CGFloat = 0.0
-    private let dimAlphas: [CGFloat] = [0.0, 0.82]
     @State private var dimLevel: Int = 0
     private let lastAppliedDimLevelBox = MutableBox(-1)
-    @State private var environmentSphereLevel: Int = 0
-    @State private var environmentUSDZLevel: Int = 0
-    @State private var moonlightMaterial: UnlitMaterial?
-    @State private var lastMoonlightAppliedRGB: SIMD3<Float> = .zero
-    @State private var lastMoonlightUpdateTime: CFTimeInterval = CACurrentMediaTime()
-    private let moonlightCycleDurationLowPower: CGFloat = 22.0
-    private let moonlightUpdateIntervalLowPower: TimeInterval = 0.22
-    private let moonlightColorDeltaThresholdLowPower: Float = 0.03
-    private let moonlightAlphaLowPower: CGFloat = 0.78
     
-    @State private var lastEnvironmentSphereLevelApplied: Int = 0
     
     @State private var showInlineHint: Bool = false
     @State private var hintOverlayText: String = ""
@@ -296,39 +261,26 @@ struct _RealityKitStreamView: View {
     
     @State private var isMenuOpen: Bool = false
     
-    @State private var isMenuOpen1: Bool = false
     
-    @State private var environmentDome: ModelEntity?
-    @State private var usdzAboveTheClouds: Entity?
-    @State private var usdzAnime: Entity?
-    @State private var usdzJustSky: Entity?
-    @State private var usdzNightTime: Entity?
-    @State private var jpgAboveTheCloudsTexture: TextureResource?
-    @State private var jpgAnimeTexture: TextureResource?
-    @State private var jpgJustSkyTexture: TextureResource?
-    @State private var jpgNightTimeTexture: TextureResource?
-    @State private var jpgTest1Texture: TextureResource?
-    @State private var jpgTest2Texture: TextureResource?
-    @State private var jpgTest3Texture: TextureResource?
-    @State private var extraSkyboxTextures: [TextureResource] = []
-    @State private var extraSkyboxNames: [String] = []
-    /// In-flight skybox bundle scan — cancel before starting another to avoid duplicate GPU allocations.
-    @State private var extraSkyboxLoadTask: Task<Void, Never>?
-    @State private var dimmerGradientPreloadTask: Task<Void, Never>?
-    
-    @State private var builtinSkyboxTextures: [String: TextureResource] = [:]
-    @State private var envPresetSkyboxTextures: [String: TextureResource] = [:]
-    @State private var envPresetLevel: Int = 0
 
     var isSBSVideo: Bool {
         let ratio = Float(streamConfig.width) / Float(streamConfig.height)
         return abs(ratio - (32.0 / 9.0)) < 0.01
     }
 
-    @State private var firstFrameReceived = false
-    @State private var idrWatchdogTimer1: Timer?
-    @State private var idrWatchdogTimer2: Timer?
     @State private var postFirstFrameRebindTimer: Timer?
+
+    private var controllerSupport: ControllerSupport? { session.controllerSupport }
+    /// The current connection is showing video: false while connecting, reconnecting or stopped.
+    /// The ambilight glow hides outside this, as it did before StreamSession, rather than holding a stale frame.
+    private var isShowingVideo: Bool { session.phase == .running }
+    private var isReconnecting: Bool { session.phase.reconnectAttempt != nil }
+    /// After a lost connection the immersive space stays on mainContent with the error overlay;
+    /// switching to the stopped overlay there dismisses or crashes the space.
+    private var keepsContentAfterLostConnection: Bool {
+        guard isImmersive, case .ended(.connectionLost) = session.phase else { return false }
+        return true
+    }
     
     var allowedScaleMax: Float { 8.0 }
     var cornerRadiusFraction: Float { viewModel.streamSettings.realitykitScreenCornerRadius }
@@ -367,7 +319,7 @@ struct _RealityKitStreamView: View {
     
     var body: some View {
         let contentView = Group {
-            if viewModel.activelyStreaming {
+            if viewModel.activelyStreaming || keepsContentAfterLostConnection {
                 mainContent
             } else {
                 ZStack {
@@ -391,52 +343,26 @@ struct _RealityKitStreamView: View {
             .onAppear(perform: setupScene)
             .onDisappear(perform: teardownScene)
             .onChange(of: viewModel.shouldCloseStream) { _, shouldClose in
-                if shouldClose && !hasPerformedTeardown {
+                if shouldClose {
                     triggerCloseSequence()
                 }
             }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("RequestStreamCloseFromMainMenu"))) { _ in
-                guard !hasPerformedTeardown else { return }
-                triggerCloseSequence()
+            .onChange(of: session.phase) { _, newPhase in
+                handleSessionPhase(newPhase)
             }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("RealityKitStreamErrorNotification"))) { notification in
-                if let msg = notification.userInfo?["message"] as? String {
-                    lastStreamErrorMessage = msg
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ConnectionTerminatedForRetry"))) { notification in
-                DispatchQueue.main.async { handleConnectionTerminatedForRetry(notification: notification) }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("RKStreamFirstFrameShown"))) { _ in
-                if reconnectAttemptCount > 0 {
-                    reconnectAttemptCount = 0
-                    isReconnecting = false
-                    connectionCallbacks.isReconnectingForRetry = false
-                    print("[StreamView] Reconnect succeeded, reset attempt count")
-                }
+            .onChange(of: session.controllerSupport) { _, support in
+                controlState.controllerSupport = support
             }
             .onChange(of: scenePhase) { oldValue, newValue in
                 if newValue == .background {
                     if isImmersive {
-                        // Trim large GPU assets while the immersive space is not visible — Studio USDZ,
-                        // skybox JPEGs, and generated gradient textures otherwise stay resident across
-                        // many crown in/out cycles and virtual-scene toggles.
+                        // Trim large GPU assets while the immersive space is not visible — the Studio USDZ
+                        // otherwise stays resident across many crown in/out cycles and virtual-scene toggles.
                         releaseImmersiveHeavyCachesForBackground()
                     }
-                    if viewModel.activelyStreaming, streamMan != nil {
-                        print("Suspending stream due to background")
-                        needsResume = true
-                        renderGateOpen = false // CRITICAL: Stop rendering before stopping stream to prevent EXC_BAD_ACCESS
-                        let sm = streamMan
-                        streamMan = nil
-                        controllerSupport?.cleanup()
-                        controllerSupport = nil
-                        
-                        sm?.stopStream(completion: {
-                            DispatchQueue.main.async {
-                                AudioHelpers.resetAudioSession()
-                            }
-                        })
+                    if viewModel.activelyStreaming {
+                        // The session closes the render gate, stops the stream and resets audio once it has stopped.
+                        session.suspend()
                     }
                 } else if newValue == .active {
                     if isImmersive,
@@ -445,13 +371,9 @@ struct _RealityKitStreamView: View {
                        !immersiveEnvironment.isLoading {
                         immersiveEnvironment.loadEnvironment()
                     }
-                    if needsResume {
-                        print("Resuming stream from background")
-                        needsResume = false
-                        self.renderGateOpen = true
-                        controllerSupport = ControllerSupport(config: streamConfig, delegate: DummyControllerDelegate())
-                        connectionCallbacks.controllerSupport = controllerSupport
-                        startStreamIfNeeded()
+                    if session.phase == .suspended {
+                        // Reconnects once the background stop has really finished.
+                        session.resume()
                         
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                             fixAudioForCurrentMode()
@@ -460,30 +382,12 @@ struct _RealityKitStreamView: View {
                             self.refreshAfterResume()
                         }
                     } else if viewModel.activelyStreaming, !isReconnecting {
-                        // Health check: If stream should be running but isn't, restart it
-                        if streamMan == nil {
-                            print("[StreamView] Stream died while inactive - restarting")
-                            self.renderGateOpen = true
-                            controllerSupport = ControllerSupport(config: streamConfig, delegate: DummyControllerDelegate())
-                            connectionCallbacks.controllerSupport = controllerSupport
-                            startStreamIfNeeded()
-                        }
-                        
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                             fixAudioForCurrentMode()
                         }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.refreshAfterResume() }
                     }
                 }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .immersiveScreenWakeRequested)) { _ in
-                guard viewModel.activelyStreaming && !showMenuPanel else { return }
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    hideControls = false
-                    controlsHighlighted = true
-                }
-                startHighlightTimer()
-                fixAudioForCurrentMode()
             }
             .onReceive(NotificationCenter.default.publisher(for: .resumeStreamFromMenu)) { _ in
                 guard viewModel.activelyStreaming else { return }
@@ -502,7 +406,6 @@ struct _RealityKitStreamView: View {
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("HardwareInputDetected"))) { _ in
                 if inputMode != .controller {
                     inputMode = .controller
-                    UserDefaults.standard.set(inputMode.rawValue, forKey: "immersiveInputMode")
                     let text = viewModel.localized(inputMode.localizedKey)
                     showInlineHint(text: text, icon: "gamecontroller.fill")
                     updateScreenInteractivity()
@@ -513,7 +416,6 @@ struct _RealityKitStreamView: View {
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("HandPinchDetected"))) { _ in
                 if inputMode == .controller && !viewModel.streamSettings.fpsMouseCapture {
                     inputMode = .gazeControl
-                    UserDefaults.standard.set(inputMode.rawValue, forKey: "immersiveInputMode")
                     let text = (viewModel.streamSettings.gazeTouchMode) ? viewModel.localized("input_mode_touch") : viewModel.localized(inputMode.localizedKey)
                     let icon: String
                     if viewModel.streamSettings.gazeTouchMode { icon = "hand.point.up.left.fill" }
@@ -525,7 +427,7 @@ struct _RealityKitStreamView: View {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .ambientAverageColorUpdated)) { notification in
-                guard dimLevel == 2 || dimLevel == 10 || dimLevel == 12 else { return }  // Only process in Reactive V1, V2, and Starfield modes
+                guard dimLevel == 2 || dimLevel == 10 else { return }  // Only process in Reactive V1 and V2 modes
                 if let r = notification.userInfo?["r"] as? Float,
                    let g = notification.userInfo?["g"] as? Float,
                    let b = notification.userInfo?["b"] as? Float {
@@ -544,7 +446,6 @@ struct _RealityKitStreamView: View {
                 handleStatsOverlay(oldValue: oldValue, newValue: newValue)
             }
             .onChange(of: viewModel.activelyStreaming) { oldValue, newValue in 
-                self.renderGateOpen = true
                 handleActiveStreaming(oldValue: oldValue, newValue: newValue)
             }
             .onChange(of: videoMode) { _, _ in updateScreenMaterial() }
@@ -553,7 +454,6 @@ struct _RealityKitStreamView: View {
                 if oldValue == .gazeControl && newValue != .gazeControl {
                     gazeController.cleanup()
                 }
-                UserDefaults.standard.set(newValue.rawValue, forKey: "immersiveInputMode")
                 updateScreenInteractivity() 
             }
             .onChange(of: viewModel.streamSettings.swapABXYButtons) { _, newValue in
@@ -600,7 +500,6 @@ struct _RealityKitStreamView: View {
                 if dimLevel != newValue {
                     dimLevel = newValue
                     viewModel.streamSettings.dimPassthrough = (newValue != 0)
-                    UserDefaults.standard.set(newValue, forKey: "ambient.dimming.level")
                     updateDimmerDomesState()
                 }
             }
@@ -628,17 +527,20 @@ struct _RealityKitStreamView: View {
                 if viewModel.streamSettings.enableHdr { updateHDRParams() }
             }
             .onChange(of: viewModel.streamSettings.reactiveLightingEnabled) { _, newValue in
+                safeAmbilightEnabled.value = newValue
                 updateDimmerDomesState()
                 updateScreenMaterial()
                 if newValue {
-                    stopMoonlightCycle()
                     startReactiveLerp()
-                } else if dimLevel != 2 && dimLevel != 10 && dimLevel != 13 {
+                } else if dimLevel != 2 && dimLevel != 10 {
                     stopReactiveLerp()
                 }
             }
-            .onChange(of: firstFrameReceived) { _, _ in 
+            .onChange(of: isShowingVideo) { _, _ in 
                 updateScreenMaterial() 
+            }
+            .onChange(of: viewModel.streamSettings.realitykitTextAntiShimmer) { _, _ in
+                updateScreenMaterial()
             }
 
         return controlStateSynced
@@ -707,7 +609,7 @@ struct _RealityKitStreamView: View {
             Text(viewModel.localized("reconnecting"))
                 .font(.headline)
                 .foregroundStyle(.white)
-            Text(String(format: viewModel.localized("reconnect_attempt"), reconnectAttemptCount, maxReconnectAttempts))
+            Text(session.phase.reconnectAttemptMessage ?? "")
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.85))
         }
@@ -862,7 +764,6 @@ struct _RealityKitStreamView: View {
         func makeRealityView(proxy: GeometryProxy3D) -> some View {
             RealityView { content, attachments in
             setupDimmerDomes(content: content)
-            setupEnvironment360(content: content)
                 setupRealityView(content: content, attachments: attachments)
             
            
@@ -870,7 +771,6 @@ struct _RealityKitStreamView: View {
             
             } update: { content, attachments in
             updateDimmerDomes(content: content)
-            updateEnvironment360(content: content)
             updateRealityView(content: content, attachments: attachments, proxy: proxy)
             } attachments: {
             Attachment(id: "controls") { screenDockBar }
@@ -894,9 +794,6 @@ struct _RealityKitStreamView: View {
                             },
                             closeAction: {
                                 viewModel.savedStreamConfigForResume = nil
-                                needsResume = false
-                                hasPerformedTeardown = false
-                                viewModel.streamState = .stopping
                                 triggerCloseSequence()
                             },
                             toggleKeyboardAction: { showVirtualKeyboard.toggle() },
@@ -942,8 +839,9 @@ struct _RealityKitStreamView: View {
                             print("[Keyboard] Submit detected, sending Return key and closing keyboard")
                             let hidReturn = Int16(bitPattern: 0x8000 | 0x0D)
                             LiSendKeyboardEvent(hidReturn, 0x03, 0)
-                            usleep(50 * 1000)
-                            LiSendKeyboardEvent(hidReturn, 0x04, 0)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                LiSendKeyboardEvent(hidReturn, 0x04, 0)
+                            }
                             showVirtualKeyboard = false
                             isKeyboardFocused = false
                             keyboardInput = ""
@@ -967,7 +865,7 @@ struct _RealityKitStreamView: View {
                         Text(viewModel.localized("reconnecting"))
                             .font(.subheadline)
                             .foregroundStyle(.white)
-                        Text(String(format: viewModel.localized("reconnect_attempt"), reconnectAttemptCount, maxReconnectAttempts))
+                        Text(session.phase.reconnectAttemptMessage ?? "")
                             .font(.caption)
                             .foregroundStyle(.white.opacity(0.85))
                     }
@@ -981,7 +879,6 @@ struct _RealityKitStreamView: View {
                 }
             }
         }
-        .upperLimbVisibility(shouldHideHands ? .hidden : .automatic)
         // Unified drag handles both Screen Move and Gaze Drag to prevent conflicts
         // Magnify and drag run simultaneously to allow pinch-to-zoom
         .gesture(magnifyGesture.simultaneously(with: unifiedDragGesture))
@@ -1009,7 +906,6 @@ struct _RealityKitStreamView: View {
             // Redirect to main menu and close self.
             openWindow(id: "mainView")
             Task { @MainActor in
-                viewModel.userDidRequestDisconnect()
                 await dismissImmersiveSpace()
                 if !isImmersive {
                     dismissWindow(id: "realitykitStreamingWindow")
@@ -1019,14 +915,11 @@ struct _RealityKitStreamView: View {
         }
 
         // Non-state prep: safe to do synchronously
-        print("[StreamView] Re-initializing ControllerSupport with slotOffset: \(streamConfig.controllerSlotOffset)")
-        self.controllerSupport = ControllerSupport(config: streamConfig, delegate: DummyControllerDelegate())
-        connectionCallbacks.controllerSupport = self.controllerSupport
         connectionCallbacks.showAlert = false
         gazeController.streamConfig = streamConfig
 
-        // Kick off stream (internally defers heavy work with asyncAfter)
-        startStreamIfNeeded()
+        // Kick off the stream (the session waits its start delay before connecting)
+        startSession()
 
         // Dismiss windows synchronously (no @State involved)
         dismissWindow(id: "mainView")
@@ -1035,8 +928,6 @@ struct _RealityKitStreamView: View {
         // Defer all @State mutations to next runloop to avoid
         // "Modifying state during view update" — onAppear fires mid-update-pass.
         DispatchQueue.main.async { [self] in
-            hasPerformedTeardown = false
-            renderGateOpen = true
             lastStreamErrorMessage = nil
 
             isMenuOpen = false
@@ -1053,19 +944,8 @@ struct _RealityKitStreamView: View {
             self.targetScale = self.screenScale
             self.tiltAngle = viewModel.streamSettings.realitykitRendererTilt
 
-            // Initialize input mode from user preference
-            if UserDefaults.standard.object(forKey: "immersive.defaultControlMode") == nil {
-                inputMode = .controller
-            } else {
-                let defaultMode = UserDefaults.standard.integer(forKey: "immersive.defaultControlMode")
-                inputMode = InputMode(rawValue: defaultMode) ?? .controller
-            }
-            
-            // Screen Move is only allowed in Immersive Mode
-            if !isImmersive && inputMode == .screenMove {
-                inputMode = .controller
-            }
-            print("[StreamView] Initialized input mode from settings: \(inputMode.displayName)")
+            // Every stream starts in controller mode.
+            inputMode = .controller
 
             // Spatial audio is read from streamSettings, no need to reset it here
 
@@ -1091,8 +971,6 @@ struct _RealityKitStreamView: View {
             hideTimer?.invalidate()
             hideTimer = nil
             hideControls = false
-
-            openedMainAfterDisconnect = false
 
             applyDefaultDisplayParams()
 
@@ -1158,10 +1036,7 @@ struct _RealityKitStreamView: View {
         }
         controlState.closeAction = { [self] in
             viewModel.savedStreamConfigForResume = nil
-            needsResume = false
-            hasPerformedTeardown = false
-            viewModel.streamState = .stopping
-            performCompleteTeardown()
+            performCompleteTeardown(.user)
         }
         
         controlState.toggleKeyboardAction = { [self] in
@@ -1264,13 +1139,9 @@ struct _RealityKitStreamView: View {
     private func teardownScene() {
         statsTimer?.invalidate()
         statsTimer = nil
-        stopMoonlightCycle()
         stopReactiveLerp()
         
-        if !hasPerformedTeardown {
-            performCompleteTeardown()
-        }
-        saveCurrentTransform()
+        performCompleteTeardown(.windowClosed)
     }
     
     // MARK: - onChange Handlers
@@ -1284,19 +1155,11 @@ struct _RealityKitStreamView: View {
             showMenuPanel = false
         }
         if newValue {
-            ensureStreamStartedIfNeeded()
+            startSession()
             dismissWindow(id: "mainView")
         }
     }
 
-    private func handleStreamState(oldValue: StreamLifecycleState, newValue: StreamLifecycleState) {
-        if newValue == .starting {
-            ensureStreamStartedIfNeeded()
-        } else if(newValue == .idle) {
-            self.shouldClose = false
-        }
-    }
-    
     // MARK: - Gestures
     
     /// Unified drag gesture to prevent conflict between Screen Move and Gaze Control
@@ -1534,52 +1397,18 @@ struct _RealityKitStreamView: View {
                     set: { val in
                         dimLevel = val
                         viewModel.streamSettings.dimPassthrough = (val != 0)
-                        UserDefaults.standard.set(val, forKey: "ambient.dimming.level")
                         
-                        // Don't enable dimmer if environment is active - let environment binding handle it after fade
-                        if environmentDome?.isEnabled != true {
-                            updateDimmerDomesState()
-                        }
+                        updateDimmerDomesState()
                         
-                        // Handle Reactive modes (V1, V2, and V3)
-                        if val == 2 || val == 10 || val == 13 {
-                            stopMoonlightCycle()
+                        // Handle Reactive modes (V1 and V2)
+                        if val == 2 || val == 10 {
                             startReactiveLerp()
                 } else {
-                            stopMoonlightCycle()
                             stopReactiveLerp()
                         }
                     }
                 ),
-                isPresented: $showDimmingPicker,
-                environmentSphereLevel: Binding(
-                    get: { environmentSphereLevel },
-                    set: { newValue in
-                        environmentSphereLevel = newValue
-                        
-                        // If disabling environment while dimming is active, wait for fade before enabling dimmer
-                        if newValue == 0 && dimLevel != 0 {
-                            updateEnvironmentState()
-                            
-                            // Wait for environment fade to complete (0.5s + small buffer)
-                            Task {
-                                try? await Task.sleep(for: .milliseconds(600))
-                                await MainActor.run {
-                                    updateDimmerDomesState()
-                    }
-                }
-            } else {
-                            updateEnvironmentState()
-                        }
-                    }
-                ),
-                envPresetLevel: Binding(
-                    get: { envPresetLevel },
-                    set: { newValue in
-                        envPresetLevel = newValue
-                        updateEnvPresetState()
-                    }
-                )
+                isPresented: $showDimmingPicker
             )
             .environmentObject(viewModel)
         } else {
@@ -1675,10 +1504,8 @@ struct _RealityKitStreamView: View {
                     if inputMode == .controller && !showVirtualKeyboard {
                         inputMode = .screenMove
                         gazeController.cleanup()
-                        UserDefaults.standard.set(inputMode.rawValue, forKey: "immersiveInputMode")
                     } else if inputMode == .screenMove && showVirtualKeyboard {
                         inputMode = .controller
-                        UserDefaults.standard.set(inputMode.rawValue, forKey: "immersiveInputMode")
                     }
                 }
                 showVirtualKeyboard.toggle()
@@ -1713,7 +1540,6 @@ struct _RealityKitStreamView: View {
         let idx = allCases.firstIndex(of: inputMode) ?? 0
         inputMode = allCases[(idx + 1) % allCases.count]
         
-        UserDefaults.standard.set(inputMode.rawValue, forKey: "immersiveInputMode")
         let text = (inputMode == .gazeControl && viewModel.streamSettings.gazeTouchMode) ? viewModel.localized("input_mode_touch") : viewModel.localized(inputMode.localizedKey)
         let icon: String
         if inputMode == .gazeControl && viewModel.streamSettings.gazeTouchMode { icon = "hand.point.up.left.fill" }
@@ -1736,13 +1562,6 @@ struct _RealityKitStreamView: View {
         }
     }
     
-    private var shouldHideHands: Bool {
-        environmentSphereLevel > 0 && viewModel.streamSettings.hideHandsIn360Environment
-    }
-    
-    // Volume ornament control panel removed - volume mode now uses VolumeControlPanelView on-screen
-    // private var volumeControlsView: ... (StandardControlPanelView was here)
-
     private func refreshAfterResume() {
         LiRequestIdrFrame()
         rebindScreenMaterial()
@@ -1752,9 +1571,26 @@ struct _RealityKitStreamView: View {
         updateScreenMaterial()
     }
 
+    /// Every material that shows the video samples it through this. RealityKit's default sampler is
+    /// already trilinear, but isotropic and repeat-wrapped; the curved screen is seen at grazing
+    /// angles, and repeat bleeds the opposite edge into the border at the coarser mips.
+    private func videoTexture(_ texture: TextureResource) -> MaterialParameters.Texture {
+        let sampler = MTLSamplerDescriptor()
+        sampler.minFilter = .linear
+        sampler.magFilter = .linear
+        sampler.mipFilter = .linear
+        sampler.maxAnisotropy = 16
+        sampler.sAddressMode = .clampToEdge
+        sampler.tAddressMode = .clampToEdge
+        // Text anti-shimmer. UnlitMaterial ignores lodBias, so raise the mip floor instead; at ~1:1
+        // texel-to-pixel that softens the same way. The SBS graph gets it as its minLod input.
+        sampler.lodMinClamp = viewModel.streamSettings.realitykitTextAntiShimmer
+        return .init(texture, sampler: .init(sampler))
+    }
+
     private func makeVideoUnlitMaterial(_ texture: TextureResource) -> UnlitMaterial {
         var material = UnlitMaterial(applyPostProcessToneMap: false)
-        material.color = .init(texture: .init(texture))
+        material.color = .init(texture: videoTexture(texture))
         return material
     }
 
@@ -1812,6 +1648,7 @@ struct _RealityKitStreamView: View {
         if videoMode == .sideBySide3D {
             if var sMat = surfaceMaterial {
                 try? sMat.setParameter(name: "texture", value: .textureResource(self.texture))
+                try? sMat.setParameter(name: "minLod", value: .float(viewModel.streamSettings.realitykitTextAntiShimmer))
                 surfaceMaterial = sMat
                 screen.model?.materials = [sMat]
             } else {
@@ -1829,9 +1666,9 @@ struct _RealityKitStreamView: View {
             ambMat.blending = .transparent(opacity: 1.0)
             ambPlane.model?.materials = [ambMat]
             
-            let isAmbilightEnabled = viewModel.streamSettings.reactiveLightingEnabled && firstFrameReceived
+            let isAmbilightEnabled = viewModel.streamSettings.reactiveLightingEnabled && isShowingVideo
             ambPlane.components.set(OpacityComponent(opacity: isAmbilightEnabled ? 1.0 : 0.0))
-            print("[Ambilight] Material updated. Opacity: \(isAmbilightEnabled ? 1.0 : 0.0) (reactiveEnabled: \(viewModel.streamSettings.reactiveLightingEnabled), firstFrameReceived: \(firstFrameReceived)). Scale: \(ambPlane.scale.x)")
+            print("[Ambilight] Material updated. Opacity: \(isAmbilightEnabled ? 1.0 : 0.0) (reactiveEnabled: \(viewModel.streamSettings.reactiveLightingEnabled), isShowingVideo: \(isShowingVideo)). Scale: \(ambPlane.scale.x)")
         }
     }
     
@@ -2281,10 +2118,6 @@ struct _RealityKitStreamView: View {
 
     // MARK: - Stream Management
 
-    private func ensureStreamStartedIfNeeded() {
-        startStreamIfNeeded()
-    }
-    
     private func updateVolumeWindowLimits(volSize: SIMD3<Float>, scaleFactor: Float, curveDepth: Float) {
         let screenHalfHeight = (CURVED_MAX_WIDTH_METERS * screenAspect * scaleFactor) / 2
         let volHalfHeight = volSize.y / 2
@@ -2429,154 +2262,138 @@ struct _RealityKitStreamView: View {
         }
     }
     
-    private func startStreamIfNeeded() {
-        guard streamMan == nil else {
-            print("[StreamView] StreamManager already exists, skipping duplicate creation")
-            needsResume = false
-            return
+    private func startSession() {
+        session.start(port: StreamSession.Port(
+            events: connectionCallbacks,
+            controllerDelegate: DummyControllerDelegate(),
+            startDelay: 1.5,
+            prepareAttempt: { _, callbacks in prepareStreamAttempt(callbacks: callbacks) }
+        ))
+    }
+
+    /// Per-attempt view setup. Returns the renderer factory for the session's StreamManager.
+    private func prepareStreamAttempt(callbacks: ConnectionCallbacks) -> () -> AnyVideoDecoderRenderer {
+        postFirstFrameRebindTimer?.invalidate(); postFirstFrameRebindTimer = nil
+        // Let the next connection's first frame clear the error HUD again; videoContentShown()
+        // only publishes once per connection.
+        connectionCallbacks.videoShown = false
+
+        // System renderer path: decode + tone map through the system media pipeline
+        // (AVSampleBufferVideoRenderer → VideoMaterial) for true HDR/EDR output.
+        // Side-by-side 3D needs the Metal shader, so it forces the Metal path.
+        // The session's .running phase does the first-frame rebind, input and HUD work for both paths.
+        if viewModel.streamSettings.useSystemVideoRenderer && videoMode != .sideBySide3D {
+            let renderer = SystemVideoRenderer(callbacks: callbacks, onResolutionChange: { width, height in
+                self.correctedResolution = (width, height)
+            })
+            systemRenderer = renderer
+            // Drop any material cached from a previous attempt: it feeds the old
+            // renderer's sink and would leave the new stream black.
+            systemVideoMaterial = nil
+            updateScreenMaterial()
+            return { renderer }
         }
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            guard !self.hasPerformedTeardown, self.viewModel.activelyStreaming, self.streamMan == nil else {
-                print("[StreamView] Aborting stream start - Teardown: \(self.hasPerformedTeardown), Streaming: \(self.viewModel.activelyStreaming), Exists: \(self.streamMan != nil)")
-                return
-            }
-            
-            self.renderGateOpen = true
-            self.firstFrameReceived = false
-            self.idrWatchdogTimer1?.invalidate(); self.idrWatchdogTimer1 = nil
-            self.idrWatchdogTimer2?.invalidate(); self.idrWatchdogTimer2 = nil
-            self.postFirstFrameRebindTimer?.invalidate(); self.postFirstFrameRebindTimer = nil
-            self.idrWatchdogTimer1 = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
-                if !self.firstFrameReceived { LiRequestIdrFrame() }
-            }
-            self.idrWatchdogTimer2 = Timer.scheduledTimer(withTimeInterval: 0.9, repeats: false) { _ in
-                if !self.firstFrameReceived { LiRequestIdrFrame() }
-            }
-            
-            // System renderer path: decode + tone map through the system media pipeline
-            // (AVSampleBufferVideoRenderer → VideoMaterial) for true HDR/EDR output.
-            // Side-by-side 3D needs the Metal shader, so it forces the Metal path.
-            if self.viewModel.streamSettings.useSystemVideoRenderer && self.videoMode != .sideBySide3D {
-                self.connectionCallbacks.controllerSupport = self.controllerSupport
-                let renderer = SystemVideoRenderer(callbacks: self.connectionCallbacks) {
-                    guard !self.firstFrameReceived else { return }
-                    self.firstFrameReceived = true
-                    self.idrWatchdogTimer1?.invalidate(); self.idrWatchdogTimer1 = nil
-                    self.idrWatchdogTimer2?.invalidate(); self.idrWatchdogTimer2 = nil
-                    // Rebind after the first frame like the Metal path's rebind timer:
-                    // the screen entity may have been (re)built since the initial bind.
-                    self.updateScreenMaterial()
-                    self.controllerSupport?.connectionEstablished()
-                    self.startHideTimer()
-                } onResolutionChange: { width, height in
-                    self.correctedResolution = (width, height)
-                }
-                self.systemRenderer = renderer
-                // Drop any material cached from a previous stream: it feeds the old
-                // renderer's sink and would leave the new stream black.
-                self.systemVideoMaterial = nil
-                self.updateScreenMaterial()
-                self.streamMan = StreamManager(
-                    config: self.streamConfig,
-                    rendererProvider: { renderer },
-                    connectionCallbacks: self.connectionCallbacks
-                )
-                if let streamMan = self.streamMan {
-                    self.streamOpQueue.addOperation(streamMan)
-                }
-                return
-            }
 
-            // A soft reconnect can reuse this view after the system renderer was turned off;
-            // drop its stale sink so updateScreenMaterial() binds the Metal texture again.
-            self.systemRenderer = nil
-            self.systemVideoMaterial = nil
-            self.recreateStreamTexture()
+        // A reconnect can reuse this view after the system renderer was turned off;
+        // drop its stale sink so updateScreenMaterial() binds the Metal texture again.
+        systemRenderer = nil
+        systemVideoMaterial = nil
+        recreateStreamTexture()
 
-            // Set controller support reference for rumble forwarding
-            self.connectionCallbacks.controllerSupport = self.controllerSupport
+        // The decoder reads these per frame on the VT thread, so capture the thread-safe boxes.
+        let hdrSettings = safeHDRSettings
+        let ambilightEnabled = safeAmbilightEnabled
+        ambilightEnabled.value = viewModel.streamSettings.reactiveLightingEnabled
+        let useFramePacing = streamConfig.useFramePacing
+        let enableHDR = viewModel.streamSettings.enableHdr
+        let isVolumeMode = !isImmersive
 
-            // Capture texture locally for thread-safe background access
-            let localTexture = self.texture
-            
-            self.streamMan = StreamManager(
-                config: self.streamConfig,
-                rendererProvider: {
-                    DrawableVideoDecoder(
-                        texture: localTexture,
-                        callbacks: self.connectionCallbacks,
-                        aspectRatio: self.screenAspect,
-                        useFramePacing: self.streamConfig.useFramePacing,
-                        enableHDR: self.viewModel.streamSettings.enableHdr,
-                        hdrSettingsProvider: {
-                            self.safeHDRSettings.value
-                        },
-                        enhancementsProvider: {
-                            (1.0, 1.0, 0.0)
-                        },
-                        isVolumeModeProvider: {
-                            !self.isImmersive
-                        },
-                        enableAmbilightProvider: {
-                            self.viewModel.streamSettings.reactiveLightingEnabled
-                        },
-                        callbackToRender: { textureQueue, ambilightQueue, correctedResolution in
-                            guard self.renderGateOpen else { return }
-
-                            DispatchQueue.main.async {
-                                if let correctedResolution { 
-                                    self.correctedResolution = correctedResolution 
+        return {
+            DrawableVideoDecoder(
+                callbacks: callbacks,
+                useFramePacing: useFramePacing,
+                enableHDR: enableHDR,
+                hdrSettingsProvider: {
+                    hdrSettings.value
+                },
+                enhancementsProvider: {
+                    (1.0, 1.0, 0.0)
+                },
+                isVolumeModeProvider: {
+                    isVolumeMode
+                },
+                enableAmbilightProvider: {
+                    ambilightEnabled.value
+                },
+                callbackToRender: { textureQueue, ambilightQueue, correctedResolution in
+                    DispatchQueue.main.async {
+                        if let correctedResolution { 
+                            self.correctedResolution = correctedResolution 
+                        }
+                        self.texture.replace(withDrawables: textureQueue)
+                        
+                        if let ambilightQueue {
+                            if self.ambilightTexture == nil {
+                                do {
+                                    let targetMipLevel = 6
+                                    let ambWidth = max(1, Int(self.streamConfig.width) >> targetMipLevel)
+                                    let ambHeight = max(1, Int(self.streamConfig.height) >> targetMipLevel)
+                                    let bytesPerPixel = self.viewModel.streamSettings.enableHdr ? 8 : 4
+                                    self.ambilightTexture = try TextureResource(
+                                        dimensions: .dimensions(width: ambWidth, height: ambHeight),
+                                        format: .raw(pixelFormat: self.viewModel.streamSettings.enableHdr ? .rgba16Float : .bgra8Unorm_srgb),
+                                        contents: .init(mipmapLevels: [.mip(data: Data(count: bytesPerPixel * ambWidth * ambHeight), bytesPerRow: bytesPerPixel * ambWidth)])
+                                    )
+                                    self.ambilightTexture?.replace(withDrawables: ambilightQueue)
+                                    self.rebindScreenMaterial()
+                                } catch {
+                                    print("Failed to init ambilightTexture: \(error)")
                                 }
-                                self.texture.replace(withDrawables: textureQueue)
-                                
-                                if let ambilightQueue {
-                                    if self.ambilightTexture == nil {
-                                        do {
-                                            let targetMipLevel = 6
-                                            let ambWidth = max(1, Int(self.streamConfig.width) >> targetMipLevel)
-                                            let ambHeight = max(1, Int(self.streamConfig.height) >> targetMipLevel)
-                                            let bytesPerPixel = self.viewModel.streamSettings.enableHdr ? 8 : 4
-                                            self.ambilightTexture = try TextureResource(
-                                                dimensions: .dimensions(width: ambWidth, height: ambHeight),
-                                                format: .raw(pixelFormat: self.viewModel.streamSettings.enableHdr ? .rgba16Float : .bgra8Unorm_srgb),
-                                                contents: .init(mipmapLevels: [.mip(data: Data(count: bytesPerPixel * ambWidth * ambHeight), bytesPerRow: bytesPerPixel * ambWidth)])
-                                            )
-                                            self.ambilightTexture?.replace(withDrawables: ambilightQueue)
-                                            self.rebindScreenMaterial()
-                                        } catch {
-                                            print("Failed to init ambilightTexture: \(error)")
-                                        }
-                                    } else {
-                                        self.ambilightTexture?.replace(withDrawables: ambilightQueue)
-                                    }
-                                }
-                                
-                                // First Frame Logic
-                                if !self.firstFrameReceived {
-                                    self.firstFrameReceived = true
-                                    self.idrWatchdogTimer1?.invalidate(); self.idrWatchdogTimer1 = nil
-                                    self.idrWatchdogTimer2?.invalidate(); self.idrWatchdogTimer2 = nil
-                                    
-                                    self.postFirstFrameRebindTimer?.invalidate()
-                                    self.postFirstFrameRebindTimer = Timer.scheduledTimer(withTimeInterval: 0.18, repeats: false) { _ in
-                                        self.rebindScreenMaterial()
-                                    }
-                                    
-                                    self.controllerSupport?.connectionEstablished()
-                                    self.startHideTimer()
-                                }
+                            } else {
+                                self.ambilightTexture?.replace(withDrawables: ambilightQueue)
                             }
                         }
-                    )
-                },
-                connectionCallbacks: self.connectionCallbacks
+                    }
+                }
             )
-            if let streamMan = self.streamMan {
-                self.streamOpQueue.addOperation(streamMan)
-            }
-            
         }
+    }
+
+    private func handleSessionPhase(_ phase: StreamSession.Phase) {
+        switch phase {
+        case .running:
+            postFirstFrameRebindTimer?.invalidate()
+            postFirstFrameRebindTimer = Timer.scheduledTimer(withTimeInterval: 0.18, repeats: false) { _ in
+                self.rebindScreenMaterial()
+            }
+            controllerSupport?.connectionEstablished()
+            startHideTimer()
+        case .ended(let end):
+            postFirstFrameRebindTimer?.invalidate(); postFirstFrameRebindTimer = nil
+            handleSessionEnded(end)
+        default:
+            break
+        }
+    }
+
+    private func handleSessionEnded(_ end: StreamSession.End) {
+        switch end {
+        case .stopped:
+            print("[StreamView] 🔴 TEARDOWN COMPLETE")
+        case .startFailed(let message):
+            showStreamError(message)
+            triggerCloseSequence()
+        case .connectionLost(let message):
+            // The volume window switches to the stopped overlay; the immersive space keeps its
+            // content and shows the error on top (see keepsContentAfterLostConnection).
+            showStreamError(message)
+        }
+    }
+
+    private func showStreamError(_ message: String) {
+        lastStreamErrorMessage = message
+        connectionCallbacks.errorMessage = message
+        connectionCallbacks.showAlert = true
     }
     
     private func recreateStreamTexture() {
@@ -2597,10 +2414,8 @@ struct _RealityKitStreamView: View {
         }
     }
     
-    @State private var openedMainAfterDisconnect = false
-    
-    private func triggerCloseSequence() {
-        performCompleteTeardown()
+    private func triggerCloseSequence(_ reason: StreamSession.StopReason = .user) {
+        performCompleteTeardown(reason)
         viewModel.shouldCloseStream = false
 
         if isImmersive {
@@ -2624,659 +2439,23 @@ struct _RealityKitStreamView: View {
         }
     }
     
-    private func handleConnectionTerminatedForRetry(notification: Notification) {
-        guard !hasPerformedTeardown, viewModel.activelyStreaming else { return }
-        guard !isPerformingReconnectTeardown else { return }  // Ignore spurious from our own stopStream
-        let msg = (notification.userInfo?["message"] as? String) ?? viewModel.localized("unknown_error")
-        
-        if reconnectAttemptCount < maxReconnectAttempts {
-            let configToUse = self.streamConfig
-            Task {
-                var isOnline = false
-                if let hostAddress = configToUse.host,
-                   let host = viewModel.hosts.first(where: { $0.activeAddress == hostAddress || $0.address == hostAddress || $0.localAddress == hostAddress || $0.externalAddress == hostAddress }) {
-                    let httpManager = HttpManager(host: host)
-                    let serverInfoResponse = ServerInfoResponse()
-                    let request = HttpRequest(
-                        for: serverInfoResponse,
-                        with: httpManager?.newServerInfoRequest(false),
-                        fallbackError: 401,
-                        fallbackRequest: httpManager?.newHttpServerInfoRequest()
-                    )
-                    
-                    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                        DispatchQueue.global(qos: .userInitiated).async {
-                            httpManager?.executeRequestSynchronously(request)
-                            continuation.resume()
-                        }
-                    }
-                    isOnline = serverInfoResponse.isStatusOk()
-                } else {
-                    isOnline = true // Fallback to normal retry if host missing
-                }
-                
-                await MainActor.run {
-                    guard !self.hasPerformedTeardown, self.viewModel.activelyStreaming else { return }
-                    
-                    if isOnline {
-                        self.reconnectAttemptCount += 1
-                        self.isReconnecting = true
-                        self.connectionCallbacks.isReconnectingForRetry = true
-                        self.isPerformingReconnectTeardown = true
-                        print("[StreamView] Connection lost, auto-reconnect attempt \(self.reconnectAttemptCount)/\(self.maxReconnectAttempts)")
-                        self.performReconnectTeardown {
-                            self.isPerformingReconnectTeardown = false
-                            DispatchQueue.main.asyncAfter(deadline: .now() + self.reconnectDelaySeconds) {
-                                guard !self.hasPerformedTeardown, self.viewModel.activelyStreaming else {
-                                    self.isReconnecting = false
-                                    self.connectionCallbacks.isReconnectingForRetry = false
-                                    return
-                                }
-                                self.renderGateOpen = true
-                                self.controllerSupport = ControllerSupport(config: self.streamConfig, delegate: DummyControllerDelegate())
-                                self.connectionCallbacks.controllerSupport = self.controllerSupport
-                                self.startStreamIfNeeded()
-                            }
-                        }
-                    } else {
-                        print("[StreamView] Host offline, aborting reconnect attempts")
-                        self.isReconnecting = false
-                        self.isPerformingReconnectTeardown = false
-                        self.connectionCallbacks.isReconnectingForRetry = false
-                        self.reconnectAttemptCount = 0
-                        self.lastStreamErrorMessage = msg
-                        self.connectionCallbacks.showAlert = true
-                        self.connectionCallbacks.errorMessage = msg
-                        if self.isImmersive {
-                            self.viewModel.streamState = .stopping
-                        }
-                        self.performReconnectTeardown {
-                            NotificationCenter.default.post(name: Notification.Name("RealityKitStreamErrorNotification"), object: nil, userInfo: ["message": msg])
-                            if !self.isImmersive {
-                                NotificationCenter.default.post(name: Notification.Name("RealityKitRetriesExhausted"), object: nil)
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            print("[StreamView] Reconnect attempts exhausted, showing error overlay")
-            isReconnecting = false
-            isPerformingReconnectTeardown = false
-            connectionCallbacks.isReconnectingForRetry = false
-            reconnectAttemptCount = 0
-            lastStreamErrorMessage = msg
-            connectionCallbacks.showAlert = true
-            connectionCallbacks.errorMessage = msg
-            if isImmersive {
-                viewModel.streamState = .stopping
-            }
-            // Soft teardown first (stop stream without full close).
-            // In immersive: keep activelyStreaming=true so we stay in mainContent and show
-            // errorHUDOverlay on top — switching to else branch causes space to dismiss/crash.
-            performReconnectTeardown {
-                NotificationCenter.default.post(name: Notification.Name("RealityKitStreamErrorNotification"), object: nil, userInfo: ["message": msg])
-                if !self.isImmersive {
-                    NotificationCenter.default.post(name: Notification.Name("RealityKitRetriesExhausted"), object: nil)
-                }
-            }
-        }
-    }
-    
-    private func performReconnectTeardown(completion: @escaping () -> Void) {
-        guard streamMan != nil else {
-            completion()
-            return
-        }
-        print("[StreamView] Reconnect teardown (soft stop, no RKStreamDidTeardown)")
-        renderGateOpen = false
-        statsTimer?.invalidate()
-        hintOverlayTimer?.invalidate()
-        hintOverlayTimer = nil
-        hideTimer?.invalidate()
-        moonlightCycleTimer?.invalidate()
-        scaleHUDFadeTimer?.invalidate()
-        environmentFadeTimer?.invalidate()
-        reactiveLerpTimer?.invalidate()
-        idrWatchdogTimer1?.invalidate(); idrWatchdogTimer1 = nil
-        idrWatchdogTimer2?.invalidate(); idrWatchdogTimer2 = nil
-        postFirstFrameRebindTimer?.invalidate(); postFirstFrameRebindTimer = nil
-        firstFrameReceived = false
-        // Allow the next connection's first frame to re-arm the RKStreamFirstFrameShown
-        // notification. Without this reset the idempotency guard in videoContentShown()
-        // would silently swallow the reconnect signal.
-        connectionCallbacks.videoShown = false
-        controllerSupport?.cleanup()
-        controllerSupport = nil
-        
-        let sm = streamMan
-        streamMan = nil
-        var completed = false
-        let finish = {
-            guard !completed else { return }
-            completed = true
-            DispatchQueue.main.async { completion() }
-        }
-        sm?.stopStream(completion: { finish() })
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { finish() }
-    }
-    
-    private func performCompleteTeardown() {
-        guard !hasPerformedTeardown else { return }
-        hasPerformedTeardown = true
-        
+    private func performCompleteTeardown(_ reason: StreamSession.StopReason) {
+        guard session.isLive else { return }
         print("[StreamView] 🔴 TEARDOWN START")
         
-        // Ensure MainViewModel isn't stuck in .running if the window was closed via system controls
-        let wasHidingForResume = viewModel.isHidingForResume
-        let isCurrentSession = (viewModel.currentStreamConfig.sessionUUID == streamConfig.sessionUUID)
-        if isCurrentSession && viewModel.activelyStreaming && viewModel.streamState != .stopping {
-            if wasHidingForResume {
-                viewModel.isHidingForResume = false
-            } else {
-                // User closed the window via system controls. 
-                // Implicitly save the config so they can resume via the Main Menu or App Intent.
-                viewModel.savedStreamConfigForResume = streamConfig
-            }
-        }
-        
-        // CRITICAL: Close render gate BEFORE stopping stream
-        renderGateOpen = false
-        
-        // Audio session will be reset after stopStream completes
-        
         statsTimer?.invalidate()
         hintOverlayTimer?.invalidate()
         hintOverlayTimer = nil
         hideTimer?.invalidate()
-        moonlightCycleTimer?.invalidate()
         scaleHUDFadeTimer?.invalidate()
-        environmentFadeTimer?.invalidate()
         reactiveLerpTimer?.invalidate()
-        
-        idrWatchdogTimer1?.invalidate(); idrWatchdogTimer1 = nil
-        idrWatchdogTimer2?.invalidate(); idrWatchdogTimer2 = nil
         postFirstFrameRebindTimer?.invalidate(); postFirstFrameRebindTimer = nil
-        firstFrameReceived = false
         ambilightTexture = nil
         systemRenderer = nil
         systemVideoMaterial = nil
 
-        controllerSupport?.cleanup()
-        controllerSupport = nil
-        
-        // CRITICAL: Use stopStreamWithCompletion so we wait for LiStopConnection()
-        // to fully finish before declaring teardown complete. Without this, a new
-        // connection can start while the old one is still stopping, causing initLock
-        // timeout and black screen.
-        if let sm = streamMan {
-            print("[StreamView] Stopping StreamManager (waiting for completion)...")
-            streamMan = nil  // Clear reference now to prevent double-stop
-            
-            // Safety flag to ensure TEARDOWN COMPLETE fires exactly once, even if
-            // both the completion callback and the safety timeout race.
-            var teardownPosted = false
-            let postTeardown = {
-                guard !teardownPosted else { return }
-                teardownPosted = true
-                print("[StreamView] StreamManager stopped, clearing references")
-                
-                // CRITICAL: Reset audio session AFTER the stream has fully stopped.
-                // Resetting it earlier causes EXC_BAD_ACCESS if the audio thread is still running.
-                AudioHelpers.resetAudioSession()
-                
-                print("[StreamView] 🔴 TEARDOWN COMPLETE")
-                NotificationCenter.default.post(name: Notification.Name("RKStreamDidTeardown"), object: nil)
-            }
-            
-            sm.stopStream(completion: {
-                DispatchQueue.main.async {
-                    postTeardown()
-                }
-            })
-            
-            // Safety timeout: if stopStream completion doesn't fire within 5s
-            // (e.g., ENet control stream is stuck), forcibly post teardown so the
-            // UI state machine isn't stuck in .stopping forever. Connection.m has
-            // its own internal 10s+10s timeouts for initLock/LiStopConnection, so
-            // the underlying stop will eventually complete on its own.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
-                if !teardownPosted {
-                    print("[StreamView] ⚠️ StreamManager stop timed out after 5s - forcing teardown complete")
-                    postTeardown()
-                }
-            }
-        } else {
-            print("[StreamView] 🔴 TEARDOWN COMPLETE (no stream to stop)")
-            NotificationCenter.default.post(name: Notification.Name("RKStreamDidTeardown"), object: nil)
-        }
-    }
-    
-    private func cleanupResources() {
-        streamMan = nil
-        controllerSupport?.cleanup()
-        controllerSupport = nil
-    }
-
-    private func startEnvironmentFade(targetOpacity: Float, completion: (() -> Void)? = nil) {
-        environmentFadeTimer?.invalidate()
-        
-        guard let dome = environmentDome else {
-            completion?()
-            return
-        }
-        
-        // Ensure OpacityComponent exists
-        if dome.components[OpacityComponent.self] == nil {
-            dome.components.set(OpacityComponent(opacity: targetOpacity == 1.0 ? 0.0 : 1.0))
-        }
-        
-        let startOpacity = dome.components[OpacityComponent.self]?.opacity ?? 0.0
-        
-        // If already close to target, just set and finish
-        if abs(startOpacity - targetOpacity) < 0.01 {
-            dome.components.set(OpacityComponent(opacity: targetOpacity))
-            completion?()
-            return
-        }
-        
-        let duration: TimeInterval = 0.5
-        let steps = 30
-        let interval = duration / Double(steps)
-        let stepAmount = (targetOpacity - startOpacity) / Float(steps)
-        
-        var currentStep = 0
-        
-        environmentFadeTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak dome] timer in
-            guard let dome = dome else {
-                timer.invalidate()
-                return
-            }
-            
-            currentStep += 1
-            let newOpacity = startOpacity + stepAmount * Float(currentStep)
-            dome.components.set(OpacityComponent(opacity: newOpacity))
-            
-            if currentStep >= steps {
-                if targetOpacity >= 1.0 {
-                    // Remove OpacityComponent when fully visible to avoid interfering with controls
-                    dome.components.remove(OpacityComponent.self)
-                } else {
-                    dome.components.set(OpacityComponent(opacity: targetOpacity))
-                }
-                timer.invalidate()
-                // self.environmentFadeTimer = nil // Omitted to avoid self capture complexity
-                completion?()
-            }
-        }
-    }
-
-    private func updateEnvironmentState() {
-        guard let dome = environmentDome else { return }
-        
-        if environmentSphereLevel == 0 {
-            startEnvironmentFade(targetOpacity: 0.0) {
-                dome.isEnabled = false
-                self.lastEnvironmentSphereLevelApplied = 0
-            }
-            return
-        }
-        
-        // If already enabled, fade out first then swap
-        if dome.isEnabled {
-            startEnvironmentFade(targetOpacity: 0.0) {
-                if let tex = self.currentSkyboxTexture() {
-                    self.applySkyboxTexture(tex)
-                    self.lastEnvironmentSphereLevelApplied = self.environmentSphereLevel
-                    self.startEnvironmentFade(targetOpacity: 1.0)
-                }
-            }
-            return
-        }
-        
-        if !dome.isEnabled {
-            dome.isEnabled = true
-            dome.components.set(OpacityComponent(opacity: 0.0))
-        }
-        
-        if let tex = currentSkyboxTexture() {
-            applySkyboxTexture(tex)
-            lastEnvironmentSphereLevelApplied = environmentSphereLevel
-            startEnvironmentFade(targetOpacity: 1.0)
-        }
-    }
-    
-    private func updateEnvPresetState() {
-        guard let dome = environmentDome else { return }
-        
-        if envPresetLevel == 0 {
-            startEnvironmentFade(targetOpacity: 0.0) {
-                dome.isEnabled = false
-            }
-            return
-        }
-        
-        // If already enabled, fade out first then swap
-        if dome.isEnabled {
-            startEnvironmentFade(targetOpacity: 0.0) {
-                if let tex = self.currentNewsetTexture() {
-                    self.applySkyboxTexture(tex)
-                    self.startEnvironmentFade(targetOpacity: 1.0)
-                }
-            }
-            return
-        }
-        
-        if !dome.isEnabled {
-            dome.isEnabled = true
-            dome.components.set(OpacityComponent(opacity: 0.0))
-        }
-        
-        if let tex = currentNewsetTexture() {
-            applySkyboxTexture(tex)
-            startEnvironmentFade(targetOpacity: 1.0)
-        }
-    }
-
-    private func currentSkyboxTexture() -> TextureResource? {
-        let builtinNames: [String] = []
-        let idx = environmentSphereLevel - 1
-        if idx >= 0 && idx < builtinNames.count {
-            if let cached = builtinSkyboxTextures[builtinNames[idx]] {
-                return cached
-            }
-            if let tex = loadTextureFromBundle(candidates: [builtinNames[idx]], subdirectory: nil) {
-                builtinSkyboxTextures[builtinNames[idx]] = tex
-                return tex
-            }
-        } else if idx >= 0 && idx - builtinNames.count < extraSkyboxTextures.count {
-            return extraSkyboxTextures[idx - builtinNames.count]
-        }
-        return nil
-    }
-    
-    private func currentNewsetTexture() -> TextureResource? {
-        let ambientPresetNames: [String] = []
-        let idx = envPresetLevel - 1
-        if idx >= 0 && idx < ambientPresetNames.count {
-            let name = ambientPresetNames[idx]
-            
-            if let cached = envPresetSkyboxTextures[name] {
-                return cached
-            }
-            
-            // Try without subdirectory (files added as group)
-            if let url = Bundle.main.url(forResource: name, withExtension: "jpg") {
-                if let tex = try? TextureResource.load(contentsOf: url) {
-                    envPresetSkyboxTextures[name] = tex
-                    return tex
-                }
-            }
-        }
-        return nil
-    }
-    
-    private func applySkyboxTexture(_ texture: TextureResource) {
-        guard let dome = environmentDome else { return }
-        var mat = UnlitMaterial(texture: texture)
-        // Keep the skybox material opaque when fully visible.
-        // OpacityComponent drives the fade and will automatically take the entity through a transparent path while fading.
-        mat.blending = .opaque
-        
-        guard let mesh = dome.model?.mesh else { return }
-        dome.model = ModelComponent(mesh: mesh, materials: [mat])
-        
-        // Apply rotation based on which set is active
-        if envPresetLevel > 0 {
-            let ambientPresetNames: [String] = []
-            let ambientPresetRotations: [String: Float] = [:]
-            let idx = envPresetLevel - 1
-            if idx >= 0 && idx < ambientPresetNames.count {
-                let skyboxName = ambientPresetNames[idx]
-                if let rotationAngle = ambientPresetRotations[skyboxName] {
-                    dome.orientation = simd_quatf(angle: rotationAngle, axis: SIMD3<Float>(0, 1, 0))
-        } else {
-                    dome.orientation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
-                }
-            }
-        } else if environmentSphereLevel > 0 {
-            let builtinNames: [String] = []
-            let rotations: [String: Float] = [:]
-            let idx = environmentSphereLevel - 1
-            if idx >= 0 && idx < builtinNames.count {
-                let skyboxName = builtinNames[idx]
-                if let rotationAngle = rotations[skyboxName] {
-                    dome.orientation = simd_quatf(angle: rotationAngle, axis: SIMD3<Float>(0, 1, 0))
-        } else {
-                    dome.orientation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
-                }
-            }
-        } else {
-            dome.orientation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
-        }
-    }
-
-    private func loadTextureFromBundle(candidates: [String], subdirectory: String?) -> TextureResource? {
-        for name in candidates {
-            if let url = Bundle.main.url(forResource: name, withExtension: "jpg", subdirectory: subdirectory) {
-                do {
-                    let tex = try TextureResource.load(contentsOf: url)
-                    return tex
-                } catch {
-                    print("[Texture] Error loading \(name).jpg: \(error)")
-                }
-            }
-        }
-        return nil
-    }
-
-    // MARK: - Mesh Generation
-
-    func generateCurvedRoundedPlane(
-        width: Float,
-        aspectRatio: Float,
-        resolution: (UInt32, UInt32),
-        curveMagnitude: Float,
-        cornerRadiusFraction: Float,
-        uvScale: Float = 1.0,
-        isAmbilight: Bool = false,
-        forcedRadius: Float? = nil
-    ) throws -> MeshResource {
-        var descr = MeshDescriptor(name: "curved_rounded_plane")
-        let height = width * aspectRatio
-        let vertexCount = Int(resolution.0 * resolution.1)
-        let numQuadsX = resolution.0 - 1
-        let numQuadsY = resolution.1 - 1
-        let triangleCount = Int(numQuadsX * numQuadsY * 2)
-        let indexCount = triangleCount * 3
-        
-        var positions = [SIMD3<Float>](repeating: .zero, count: vertexCount)
-        var texcoords = [SIMD2<Float>](repeating: .zero, count: vertexCount)
-        var indices = [UInt32](repeating: 0, count: indexCount)
-        
-        let maxCurveAngle: Float = CURVED_MAX_ANGLE
-        
-        let currentAngle: Float
-        let radius: Float
-        let isFlat: Bool
-        
-        if let fr = forcedRadius {
-            radius = fr
-            isFlat = !radius.isFinite || radius == 0
-            currentAngle = isFlat ? 0.0 : (width / radius)
-        } else {
-            currentAngle = maxCurveAngle * max(0.0, min(curveMagnitude, 2.0))
-            isFlat = currentAngle < 0.0001
-            radius = isFlat ? .infinity : (width / currentAngle)
-        }
-        
-        let halfAngle = currentAngle / 2.0
-        
-        let cornerRadius = max(0.0, min(0.25, cornerRadiusFraction)) * height
-        let x0 = -width / 2.0
-        let y0 = -height / 2.0
-        
-        let texInset: Float = 0.002
-        
-        var vi = 0
-        var ii = 0
-
-        for y_v in 0 ..< resolution.1 {
-            let v_geo = Float(y_v) / Float(resolution.1 - 1)
-            let yFlat = (0.5 - v_geo) * height
-            let v_tex = (1.0 - v_geo) * (1.0 - 2.0 * texInset) + texInset
-
-            for x_v in 0 ..< resolution.0 {
-                let u = Float(x_v) / Float(resolution.0 - 1)
-                let xFlat = (u - 0.5) * width
-
-                var xr = xFlat, yr = yFlat
-                if cornerRadius > 0 {
-                    if xr < x0 + cornerRadius && yr < y0 + cornerRadius {
-                        let dx = xr - (x0 + cornerRadius), dy = yr - (y0 + cornerRadius)
-                        if let (nx, ny) = normalizeAndScale(dx, dy, cornerRadius) { xr = (x0 + cornerRadius) + nx; yr = (y0 + cornerRadius) + ny }
-                    } else if xr > -x0 - cornerRadius && yr < y0 + cornerRadius {
-                        let dx = xr - (-x0 - cornerRadius), dy = yr - (y0 + cornerRadius)
-                        if let (nx, ny) = normalizeAndScale(dx, dy, cornerRadius) { xr = (-x0 - cornerRadius) + nx; yr = (y0 + cornerRadius) + ny }
-                    } else if xr < x0 + cornerRadius && yr > -y0 - cornerRadius {
-                        let dx = xr - (x0 + cornerRadius), dy = yr - (-y0 - cornerRadius)
-                        if let (nx, ny) = normalizeAndScale(dx, dy, cornerRadius) { xr = (x0 + cornerRadius) + nx; yr = (-y0 - cornerRadius) + ny }
-                    } else if xr > -x0 - cornerRadius && yr > -y0 - cornerRadius {
-                        let dx = xr - (-x0 - cornerRadius), dy = yr - (-y0 - cornerRadius)
-                        if let (nx, ny) = normalizeAndScale(dx, dy, cornerRadius) { xr = (-x0 - cornerRadius) + nx; yr = (-y0 - cornerRadius) + ny }
-                    }
-                }
-                
-                var px = xr, pz: Float = 0.0
-                if !isFlat, radius.isFinite {
-                    let t = xr / (width / 2.0)
-                    let theta = t * halfAngle
-                    px = radius * sin(theta)
-                    pz = radius - (radius * cos(theta))
-                }
-
-                positions[vi] = SIMD3<Float>(px, yr, pz)
-                let u_tex = u * (1.0 - 2.0 * texInset) + texInset
-                
-                var final_u = u_tex
-                var final_v = v_tex
-                
-                if isAmbilight {
-                    // Do not scale UVs. The texture itself has the video centered 
-                    // and fades to black at the edges via the new ambilight shader.
-                    final_u = u_tex
-                    final_v = v_tex
-                }
-
-                texcoords[vi] = SIMD2<Float>(final_u, final_v)
-
-                if x_v < numQuadsX && y_v < numQuadsY {
-                    let current = UInt32(vi), nextRow = current + resolution.0
-                    indices[ii + 0] = current; indices[ii + 1] = nextRow; indices[ii + 2] = nextRow + 1
-                    indices[ii + 3] = current; indices[ii + 4] = nextRow + 1; indices[ii + 5] = current + 1
-                    ii += 6
-                }
-                vi += 1
-            }
-        }
-
-        descr.positions = MeshBuffer(positions)
-        descr.textureCoordinates = MeshBuffers.TextureCoordinates(texcoords)
-        descr.primitives = .triangles(indices)
-        return try MeshResource.generate(from: [descr])
-    }
-
-    private func normalizeAndScale(_ dx: Float, _ dy: Float, _ cornerRadius: Float) -> (Float, Float)? {
-        let dist = sqrt(dx*dx + dy*dy)
-        if dist > cornerRadius {
-            let s = cornerRadius / dist
-            return (dx * s, dy * s)
-        }
-        return nil
-    }
-    
-    private func getDimmerMaterial() -> (RealityKit.Material, TextureResource?) {
-        if dimLevel == 11 {
-            if let cached = moonlightMaterial {
-                return (cached, nil)
-            } else {
-                let initial = getMoonlightCycleColor(phase: moonlightCyclePhase).withAlphaComponent(moonlightAlphaLowPower)
-                var mat = moonlightMaterial ?? UnlitMaterial(color: initial)
-                mat.blending = .transparent(opacity: 1.0)
-                moonlightMaterial = mat
-                return (mat, nil)
-            }
-        }
-
-        if dimLevel == 2 {
-            // Reactive V1 - Keeps transparency (0.85), so keep .transparent
-            var mat = UnlitMaterial(color: currentAmbientColor.withAlphaComponent(0.85))
-            mat.blending = .transparent(opacity: 1.0)
-            return (mat, nil)
-        }
-
-        if dimLevel == 10 {
-            // Reactive V2 - SOLID COLOR (reactive)
-            // Use .opaque for proper Z-sorting so UI icons render on top
-            var mat = UnlitMaterial(color: currentAmbientColor.withAlphaComponent(1.0))
-            mat.blending = .opaque
-            return (mat, nil)
-        }
-        
-        if dimLevel == 12 {
-            // Starfield - Pure black background
-            var mat = UnlitMaterial(color: .black)
-            mat.blending = .opaque
-            return (mat, nil)
-        }
-
-        let selectedTex: TextureResource?
-        switch dimLevel {
-        case 4: selectedTex = eclipseGradientTexture
-        case 5: selectedTex = purpleGradientTexturePurpleBlack
-        case 6: selectedTex = twilightGradientTexture
-        case 7: selectedTex = dawnGradientTexture
-        case 8: selectedTex = sunriseGradientTexture
-        case 9: selectedTex = woodlandGradientTexture
-        case 14: selectedTex = desertGradientTexture
-        default: selectedTex = purpleGradientTextureColors
-        }
-
-        let mat: RealityKit.Material
-        if let tex = selectedTex {
-            var unlitMat = UnlitMaterial(texture: tex)
-
-            // Eclipse (Level 4) is SOLID black - use .opaque for proper Z-sorting
-            if dimLevel == 4 {
-                unlitMat.color.tint = .white
-                unlitMat.blending = .opaque
-        } else {
-                // All other gradients are semi-transparent
-                let tintAlpha: CGFloat = {
-                    switch dimLevel {
-                    case 5: return 0.95
-                    case 6, 7, 8, 9, 14: return 0.90
-                    default: return 0.5
-                    }
-                }()
-                unlitMat.color.tint = UIColor.white.withAlphaComponent(tintAlpha)
-                unlitMat.blending = .transparent(opacity: 1.0)
-            }
-            mat = unlitMat
-        } else {
-            var fallback = UnlitMaterial(color: .purple)
-            let fallbackAlpha: CGFloat = {
-                switch dimLevel {
-                case 4, 5: return 0.95
-                case 6, 7, 8, 9, 10: return 0.90
-                default: return 0.5
-                }
-            }()
-            fallback.color.tint = UIColor(red: 0.60, green: 0.40, blue: 0.90, alpha: fallbackAlpha)
-            fallback.blending = .transparent(opacity: 1.0)
-            mat = fallback
-        }
-        return (mat, selectedTex)
+        // The session closes the render gate, stops the stream, waits for it, then resets audio.
+        session.stop(reason)
     }
 
     private func updateDimmerDomesState() {
@@ -3343,220 +2522,13 @@ struct _RealityKitStreamView: View {
         self.dimmerDomePurple = purpleDome
 
         updateDimmerDomesState()
-
-        dimmerGradientPreloadTask?.cancel()
-        dimmerGradientPreloadTask = Task {
-            purpleGradientTextureColors = try? await makeGradientTexture(size: 1024, gradient: .sunset)
-            purpleGradientTexturePurpleBlack = try? await makeGradientTexture(size: 1024, gradient: .midnight)
-            eclipseGradientTexture = try? await makeGradientTexture(size: 1024, gradient: .eclipse)
-            twilightGradientTexture = try? await makeGradientTexture(size: 1024, gradient: .twilight)
-            dawnGradientTexture = try? await makeGradientTexture(size: 1024, gradient: .dawn)
-            sunriseGradientTexture = try? await makeGradientTexture(size: 1024, gradient: .sunrise)
-            woodlandGradientTexture = try? await makeGradientTexture(size: 1024, gradient: .woodland)
-            desertGradientTexture = try? await makeGradientTexture(size: 1024, gradient: .desert)
-            duskHDRTexture = try? await TextureResource(named: "dusk")
-            await MainActor.run { self.dimmerGradientPreloadTask = nil }
-        }
     }
 
-    // MARK: - Gradient Presets and Generator for Dimming Textures
-    enum GradientPreset {
-        case sunset
-        case midnight
-        case eclipse
-        case twilight
-        case dawn
-        case sunrise
-        case woodland
-        case desert
-    }
-
-    func makeGradientTexture(size: Int, gradient: GradientPreset) async throws -> TextureResource? {
-        let s = max(size, 32)
-        let rect = CGRect(x: 0, y: 0, width: s, height: s)
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: s, height: s))
-
-        let img = renderer.image { ctx in
-            ctx.cgContext.setFillColor(UIColor.clear.cgColor)
-            ctx.cgContext.fill(rect)
-
-            let colors: [CGColor]
-            let locations: [CGFloat]
-
-            switch gradient {
-            case .sunset:
-                colors = [
-                    UIColor(red: 0.60, green: 0.40, blue: 0.90, alpha: 0.50).cgColor,
-                    UIColor(red: 0.95, green: 0.60, blue: 0.85, alpha: 0.45).cgColor,
-                    UIColor(red: 0.95, green: 0.45, blue: 0.60, alpha: 0.42).cgColor,
-                    UIColor(red: 0.976, green: 0.627, blue: 0.251, alpha: 0.38).cgColor
-                ]
-                locations = [0.0, 0.33, 0.65, 1.0]
-
-            case .midnight:
-                colors = [
-                    UIColor(red: 0.60, green: 0.40, blue: 0.90, alpha: 0.42).cgColor,
-                    UIColor(red: 0.60, green: 0.40, blue: 0.90, alpha: 0.30).cgColor,
-                    UIColor(red: 0.50, green: 0.30, blue: 0.75, alpha: 0.18).cgColor,
-                    UIColor.black.withAlphaComponent(0.84).cgColor,
-                    UIColor.black.withAlphaComponent(0.94).cgColor,
-                    UIColor.black.withAlphaComponent(1.00).cgColor
-                ]
-                locations = [0.00, 0.20, 0.35, 0.50, 0.80, 1.00]
-
-            case .eclipse:
-                colors = [
-                    UIColor.black.cgColor,
-                    UIColor.black.cgColor,
-                    UIColor.black.cgColor,
-                    UIColor.black.cgColor
-                ]
-                locations = [0.0, 0.30, 0.70, 1.0]
-
-            case .twilight:
-                colors = [
-                    UIColor(red: 0.25, green: 0.20, blue: 0.40, alpha: 0.70).cgColor,
-                    UIColor(red: 0.40, green: 0.25, blue: 0.50, alpha: 0.75).cgColor,
-                    UIColor(red: 0.20, green: 0.15, blue: 0.30, alpha: 0.82).cgColor,
-                    UIColor(red: 0.05, green: 0.03, blue: 0.10, alpha: 0.90).cgColor
-                ]
-                locations = [0.0, 0.35, 0.70, 1.0]
-
-            case .dawn:
-                colors = [
-                    UIColor(red: 0.95, green: 0.75, blue: 0.55, alpha: 0.45).cgColor,
-                    UIColor(red: 0.90, green: 0.60, blue: 0.70, alpha: 0.50).cgColor,
-                    UIColor(red: 0.60, green: 0.45, blue: 0.75, alpha: 0.60).cgColor,
-                    UIColor(red: 0.30, green: 0.25, blue: 0.45, alpha: 0.75).cgColor
-                ]
-                locations = [0.0, 0.30, 0.65, 1.0]
-
-            case .sunrise:
-                colors = [
-                    UIColor(red: 1.00, green: 0.85, blue: 0.40, alpha: 0.38).cgColor,
-                    UIColor(red: 0.98, green: 0.70, blue: 0.50, alpha: 0.42).cgColor,
-                    UIColor(red: 0.90, green: 0.50, blue: 0.60, alpha: 0.48).cgColor,
-                    UIColor(red: 0.70, green: 0.40, blue: 0.70, alpha: 0.55).cgColor
-                ]
-                locations = [0.0, 0.30, 0.65, 1.0]
-
-            case .woodland:
-                colors = [
-                    UIColor(red: 0.25, green: 0.45, blue: 0.22, alpha: 0.65).cgColor,
-                    UIColor(red: 0.18, green: 0.32, blue: 0.15, alpha: 0.75).cgColor,
-                    UIColor(red: 0.08, green: 0.18, blue: 0.06, alpha: 0.90).cgColor,
-                    UIColor(red: 0.04, green: 0.10, blue: 0.03, alpha: 0.98).cgColor
-                ]
-                locations = [0.0, 0.30, 0.60, 1.0]
-
-            case .desert:
-                colors = [
-                    UIColor(red: 0.95, green: 0.80, blue: 0.55, alpha: 0.60).cgColor,
-                    UIColor(red: 0.80, green: 0.60, blue: 0.40, alpha: 0.70).cgColor,
-                    UIColor(red: 0.35, green: 0.22, blue: 0.12, alpha: 0.90).cgColor,
-                    UIColor(red: 0.20, green: 0.12, blue: 0.06, alpha: 0.98).cgColor
-                ]
-                locations = [0.0, 0.25, 0.55, 1.0]
-            }
-
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-            if let cgGradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: locations) {
-                let startPoint = CGPoint(x: rect.midX, y: rect.minY)
-                let endPoint = CGPoint(x: rect.midX, y: rect.maxY)
-                ctx.cgContext.drawLinearGradient(
-                    cgGradient,
-                    start: startPoint,
-                    end: endPoint,
-                    options: [.drawsAfterEndLocation]
-                )
-            }
-        }
-
-        if let cg = img.cgImage {
-            return try TextureResource.generate(from: cg, options: .init(semantic: .color))
-        }
-        return nil
-    }
-
-    private func getMoonlightCycleColor(phase: CGFloat) -> UIColor {
-        let p = phase.truncatingRemainder(dividingBy: 1.0)
-        if p < 0.2 {
-            return interpolateColor(from: UIColor(red: 0.02, green: 0.02, blue: 0.05, alpha: 0.96), to: UIColor(red: 0.10, green: 0.06, blue: 0.16, alpha: 0.96), progress: p / 0.2)
-        } else if p < 0.4 {
-            return interpolateColor(from: UIColor(red: 0.10, green: 0.06, blue: 0.16, alpha: 0.96), to: UIColor(red: 0.08, green: 0.10, blue: 0.18, alpha: 0.96), progress: (p - 0.2) / 0.2)
-        } else if p < 0.6 {
-            return interpolateColor(from: UIColor(red: 0.08, green: 0.10, blue: 0.18, alpha: 0.96), to: UIColor(red: 0.20, green: 0.16, blue: 0.28, alpha: 0.96), progress: (p - 0.4) / 0.2)
-        } else if p < 0.8 {
-            return interpolateColor(from: UIColor(red: 0.20, green: 0.16, blue: 0.28, alpha: 0.96), to: UIColor(red: 0.22, green: 0.28, blue: 0.36, alpha: 0.96), progress: (p - 0.6) / 0.2)
-        } else {
-            return interpolateColor(from: UIColor(red: 0.22, green: 0.28, blue: 0.36, alpha: 0.96), to: UIColor(red: 0.02, green: 0.02, blue: 0.05, alpha: 0.96), progress: (p - 0.8) / 0.2)
-        }
-    }
-
-    private func interpolateColor(from: UIColor, to: UIColor, progress: CGFloat) -> UIColor {
-        var (r1, g1, b1, a1): (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0)
-        var (r2, g2, b2, a2): (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0)
-        from.getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
-        to.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
-        return UIColor(red: r1 + (r2 - r1) * progress, green: g1 + (g2 - g1) * progress, blue: b1 + (b2 - b1) * progress, alpha: a1 + (a2 - a1) * progress)
-    }
-    
-    private func rgb(_ color: UIColor) -> SIMD3<Float> {
-        var (r, g, b, a): (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0)
-        color.getRed(&r, green: &g, blue: &b, alpha: &a)
-        return SIMD3<Float>(Float(r), Float(g), Float(b))
-    }
-
-    private func colorDistance(_ a: SIMD3<Float>, _ b: SIMD3<Float>) -> Float {
-        let d = a - b
-        return simd_length(d)
-    }
-
-    private func setupEnvironment360(content: RealityViewContent) {
-        // RealityView's initial closure can run more than once across SwiftUI updates; guard
-        // so we never stack duplicate 60m spheres or re-fire skybox loads.
-        guard environmentDome == nil else { return }
-
-        let sphere = ModelEntity(mesh: .generateSphere(radius: 60.0), materials: [UnlitMaterial(color: .clear)])
-        sphere.scale.x = -1.0
-        sphere.isEnabled = false
-        content.add(sphere)
-        environmentDome = sphere
-
-        if extraSkyboxTextures.isEmpty && extraSkyboxNames.isEmpty {
-            loadExtraSkyboxesFromBundle()
-        }
-        if environmentSphereLevel != 0, let tex = currentSkyboxTexture() {
-            sphere.isEnabled = true
-            applySkyboxTexture(tex)
-            lastEnvironmentSphereLevelApplied = environmentSphereLevel
-        } else if envPresetLevel != 0, let tex = currentSkyboxTexture() {
-            sphere.isEnabled = true
-            applySkyboxTexture(tex)
-        }
-    }
-
-    func updateEnvironment360(content: RealityViewContent) {
-        // We handle environment updates via updateEnvironmentState() triggered by Binding changes
-        // to support fade animations. Automatic updates here would interfere with transitions.
-    }
-
-    private func restoreEnvironmentTextureIfNeeded() {
-        guard let dome = environmentDome else { return }
-        guard immersiveEnvironment.environmentStateHandler.activeState != .none || selectedEnvironmentState != .none else { return }
-        guard environmentSphereLevel != 0 || envPresetLevel != 0 else { return }
-        guard let tex = currentSkyboxTexture() else { return }
-
-        dome.isEnabled = true
-        applySkyboxTexture(tex)
-    }
-
-    internal init(streamConfig: Binding<StreamConfiguration>, needsHdr: Bool, isImmersive: Bool, swapAction: @escaping () -> Void) {
-        self.swapAction = swapAction
+    internal init(session: StreamSession, streamConfig: Binding<StreamConfiguration>, needsHdr: Bool, isImmersive: Bool) {
         self._streamConfig = streamConfig
         self.needsHdr = needsHdr
         self.isImmersive = isImmersive
-        self.controllerSupport = ControllerSupport(config: streamConfig.wrappedValue, delegate: DummyControllerDelegate())
+        self.session = session
         
         let bytesPerPixel = needsHdr ? 8 : 4
         let data = Data(count: bytesPerPixel * Int(streamConfig.wrappedValue.width) * Int(streamConfig.wrappedValue.height))
@@ -3620,81 +2592,70 @@ struct _RealityKitStreamView: View {
         screenPosition = newPos
     }
 
-    private func saveCurrentTransform() {
-        var pos = screenPosition
-        let scale = screenScale
-        let packed = [pos.x, pos.y, pos.z]
-        UserDefaults.standard.set(packed, forKey: kImmersivePosKey)
-        UserDefaults.standard.set(scale, forKey: kImmersiveScaleKey)
-    }
-
     private func restoreSavedTransform() {
         let defaults = UserDefaults.standard
         if !isImmersive {
-            if let h = defaults.object(forKey: "realitykitHeight") as? Float { volumeHeight = h }
-            if let d = defaults.object(forKey: "realitykitDepthOffset") as? Float { volumeDepthOffset = d }
-            if let legacyTilt = defaults.object(forKey: "realitykitTiltAngle") as? Float { 
+            if let h = defaults.object(forKey: .realitykitHeight) as? Float { volumeHeight = h }
+            if let d = defaults.object(forKey: .realitykitDepthOffset) as? Float { volumeDepthOffset = d }
+            if let legacyTilt = defaults.object(forKey: .legacyTiltAngle) as? Float { 
                 controlState.tiltAngle = legacyTilt
                 tiltAngle = legacyTilt
                 viewModel.streamSettings.realitykitRendererTilt = legacyTilt
-                defaults.removeObject(forKey: "realitykitTiltAngle")
+                defaults.removeObject(forKey: .legacyTiltAngle)
             }
             if viewModel.streamSettings.rememberStreamSettings {
-                if let c = defaults.object(forKey: "realitykitVolumeCurvature") as? Float { viewModel.streamSettings.realitykitRendererCurvature = c }
-                if let g = defaults.object(forKey: "realitykitVolumeGamma") as? Float { viewModel.streamSettings.gamma = g }
-                if let s = defaults.object(forKey: "realitykitVolumeSaturation") as? Float { viewModel.streamSettings.saturation = s }
-                if let b = defaults.object(forKey: "realitykitVolumeBrightness") as? Float { viewModel.streamSettings.brightness = b }
-                if let p = defaults.object(forKey: "realitykitVolumePqExposure") as? Float {
+                if let c = defaults.object(forKey: .realitykitVolumeCurvature) as? Float { viewModel.streamSettings.realitykitRendererCurvature = c }
+                if let g = defaults.object(forKey: .realitykitVolumeGamma) as? Float { viewModel.streamSettings.gamma = g }
+                if let s = defaults.object(forKey: .realitykitVolumeSaturation) as? Float { viewModel.streamSettings.saturation = s }
+                if let b = defaults.object(forKey: .realitykitVolumeBrightness) as? Float { viewModel.streamSettings.brightness = b }
+                if let p = defaults.object(forKey: .realitykitVolumePqExposure) as? Float {
                     viewModel.streamSettings.pqExposure = p
-                } else if let p = defaults.object(forKey: "realitykitPqExposure") as? Float {
+                } else if let p = defaults.object(forKey: .realitykitPqExposure) as? Float {
                     viewModel.streamSettings.pqExposure = p
                 }
-                if let dim = defaults.object(forKey: "realitykitVolumeDimPassthrough") as? Bool { viewModel.streamSettings.dimPassthrough = dim }
+                if let dim = defaults.object(forKey: .realitykitVolumeDimPassthrough) as? Bool { viewModel.streamSettings.dimPassthrough = dim }
             }
             return
         }
         // Prefer controlState values (saved by control panel) over legacy immersive.pos/scale
         if viewModel.streamSettings.rememberStreamSettings {
-            if let c = defaults.object(forKey: "realitykitImmersiveCurvature") as? Float { viewModel.streamSettings.realitykitRendererCurvature = c }
-            if let g = defaults.object(forKey: "realitykitImmersiveGamma") as? Float { viewModel.streamSettings.gamma = g }
-            if let s = defaults.object(forKey: "realitykitImmersiveSaturation") as? Float { viewModel.streamSettings.saturation = s }
-            if let b = defaults.object(forKey: "realitykitImmersiveBrightness") as? Float { viewModel.streamSettings.brightness = b }
-            if let p = defaults.object(forKey: "realitykitImmersivePqExposure") as? Float { viewModel.streamSettings.pqExposure = p }
+            if let c = defaults.object(forKey: .realitykitImmersiveCurvature) as? Float { viewModel.streamSettings.realitykitRendererCurvature = c }
+            if let g = defaults.object(forKey: .realitykitImmersiveGamma) as? Float { viewModel.streamSettings.gamma = g }
+            if let s = defaults.object(forKey: .realitykitImmersiveSaturation) as? Float { viewModel.streamSettings.saturation = s }
+            if let b = defaults.object(forKey: .realitykitImmersiveBrightness) as? Float { viewModel.streamSettings.brightness = b }
+            if let p = defaults.object(forKey: .realitykitImmersivePqExposure) as? Float { viewModel.streamSettings.pqExposure = p }
         }
         // Position/scale: only restore when rememberStreamSettings and valid saved data exists
-        let defaultImmersivePosition = SIMD3<Float>(0, 1.0, -1.5)
-        let defaultImmersiveScale: Float = 0.8
+        let defaultImmersivePosition = StreamControlState.defaultImmersivePosition
+        let defaultImmersiveScale = StreamControlState.defaultImmersiveScale
         if viewModel.streamSettings.rememberStreamSettings {
-            if let savedPosX = defaults.object(forKey: "realitykitImmersivePosX") as? Float,
-               let savedPosY = defaults.object(forKey: "realitykitImmersivePosY") as? Float,
-               let savedPosZ = defaults.object(forKey: "realitykitImmersivePosZ") as? Float {
+            if let savedPosX = defaults.object(forKey: .realitykitImmersivePosX) as? Float,
+               let savedPosY = defaults.object(forKey: .realitykitImmersivePosY) as? Float,
+               let savedPosZ = defaults.object(forKey: .realitykitImmersivePosZ) as? Float {
                 screenPosition = SIMD3<Float>(savedPosX, savedPosY, savedPosZ)
-            } else if let packed = defaults.array(forKey: kImmersivePosKey) as? [Float], packed.count == 3 {
+            } else if let packed = defaults.array(forKey: .legacyImmersivePosition) as? [Float], packed.count == 3 {
                 screenPosition = SIMD3<Float>(packed[0], packed[1], packed[2])
             } else {
                 screenPosition = defaultImmersivePosition
             }
-            if let savedScale = defaults.object(forKey: "realitykitImmersiveScale") as? Float, savedScale > 0 {
+            if let savedScale = defaults.object(forKey: .realitykitImmersiveScale) as? Float, savedScale > 0 {
                 screenScale = savedScale
             } else {
-                let scale = defaults.float(forKey: kImmersiveScaleKey)
+                let scale = defaults.float(forKey: .legacyImmersiveScale)
                 screenScale = scale > 0 ? scale : defaultImmersiveScale
             }
         } else {
             screenPosition = defaultImmersivePosition
             screenScale = defaultImmersiveScale
         }
-        if let savedImmersion = defaults.object(forKey: "realitykitImmersionAmount") as? Float {
+        if let savedImmersion = defaults.object(forKey: .realitykitImmersionAmount) as? Float {
             immersionAmount = savedImmersion
         }
-        if let savedLocked = defaults.object(forKey: kImmersiveLockedKey) as? Bool {
+        if let savedLocked = defaults.object(forKey: .immersiveLocked) as? Bool {
             controlState.isInteractive = savedLocked
         }
     }
     
-    private let kImmersiveLockedKey = "immersive.locked"
-    private let kImmersivePosKey = "immersive.pos"
-    private let kImmersiveScaleKey = "immersive.scale"
     private func handleWindowClose() {
         isMenuOpen = false
         if let sceneID = self.immersiveSpaceSceneID {
@@ -3704,12 +2665,6 @@ struct _RealityKitStreamView: View {
         }
     }
 
-    private func stopMoonlightCycle() {
-        moonlightCycleTimer?.invalidate()
-        moonlightCycleTimer = nil
-        moonlightMaterial = nil
-    }
-    
     // MARK: - Reactive Color Lerp
     
     private func startReactiveLerp() {
@@ -3791,8 +2746,10 @@ struct _RealityKitStreamView: View {
     private func startStatsTimer() {
         statsTimer?.invalidate()
         statsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            if let streamMan = self.streamMan, let stats = streamMan.getStatsOverlayText() {
-                self.statsOverlayText = stats
+            MainActor.assumeIsolated {
+                if let stats = self.session.statsOverlayText() {
+                    self.statsOverlayText = stats
+                }
             }
         }
     }
@@ -3846,83 +2803,11 @@ struct _RealityKitStreamView: View {
         }
     }
     
-    // MARK: - Preload Skyboxes
-    private func loadExtraSkyboxesFromBundle() {
-        extraSkyboxLoadTask?.cancel()
-        // Load skyboxes on background thread to avoid blocking main thread during view setup
-        extraSkyboxLoadTask = Task.detached(priority: .background) {
-            let exts = ["jpg", "jpeg", "png"]
-            let builtinSet: Set<String> = ["AboveClouds", "Above_Clouds"]
-            var names: [String] = []
-            var textures: [TextureResource] = []
-            
-            for ext in exts {
-                if let urls = Bundle.main.urls(forResourcesWithExtension: ext, subdirectory: "Skyboxes") {
-                    for url in urls {
-                        let base = url.deletingPathExtension().lastPathComponent
-                        if builtinSet.contains(base) { continue }
-                        if names.contains(base) { continue }
-                        do {
-                            let tex = try TextureResource.load(contentsOf: url)
-                            names.append(base)
-                            textures.append(tex)
-                        } catch {
-                            print("[Texture] Error loading \(base).\(ext): \(error)")
-                        }
-                    }
-                }
-            }
-            
-            // Update state on main thread once loading is complete
-            await MainActor.run {
-                guard !Task.isCancelled else { return }
-                self.extraSkyboxNames = names
-                self.extraSkyboxTextures = textures
-                print("[Skybox] Loaded \(names.count) extra skyboxes in background")
-                self.restoreEnvironmentTextureIfNeeded()
-                self.extraSkyboxLoadTask = nil
-            }
-        }
-    }
-
     /// Drop large optional GPU resources when immersive session or app backgrounds.
-    /// Studio USDZ is released via `ImmersiveEnvironment`; skybox / dimmer textures are cleared here.
+    /// Studio USDZ is released via `ImmersiveEnvironment`; the reactive dimmer material is cleared here.
     private func releaseImmersiveHeavyCachesForBackground() {
-        extraSkyboxLoadTask?.cancel()
-        extraSkyboxLoadTask = nil
-        dimmerGradientPreloadTask?.cancel()
-        dimmerGradientPreloadTask = nil
-
-        extraSkyboxTextures = []
-        extraSkyboxNames = []
-        builtinSkyboxTextures = [:]
-        envPresetSkyboxTextures = [:]
-
-        purpleGradientTextureColors = nil
-        purpleGradientTexturePurpleBlack = nil
-        eclipseGradientTexture = nil
-        twilightGradientTexture = nil
-        dawnGradientTexture = nil
-        sunriseGradientTexture = nil
-        woodlandGradientTexture = nil
-        desertGradientTexture = nil
-        duskHDRTexture = nil
-        jpgAboveTheCloudsTexture = nil
-        jpgAnimeTexture = nil
-        jpgJustSkyTexture = nil
-        jpgNightTimeTexture = nil
-        jpgTest1Texture = nil
-        jpgTest2Texture = nil
-        jpgTest3Texture = nil
-        moonlightMaterial = nil
         cachedReactiveMaterial = nil
-        environmentFadeTimer?.invalidate()
 
-        if let dome = environmentDome, let mesh = dome.model?.mesh {
-            var clearMat = UnlitMaterial(color: .clear)
-            clearMat.blending = .transparent(opacity: 1.0)
-            dome.model = ModelComponent(mesh: mesh, materials: [clearMat])
-        }
         if let purple = dimmerDomePurple, let mesh = purple.model?.mesh {
             var m = UnlitMaterial(color: .black)
             m.blending = .transparent(opacity: 1.0)
@@ -4050,22 +2935,22 @@ struct _RealityKitStreamView: View {
         let defaults = UserDefaults.standard
         viewModel.streamSettings.realitykitRendererTilt = tiltAngle
         if isImmersive {
-            defaults.set(screenScale, forKey: "realitykitImmersiveScale")
-            defaults.set(screenPosition.x, forKey: "realitykitImmersivePosX")
-            defaults.set(screenPosition.y, forKey: "realitykitImmersivePosY")
-            defaults.set(screenPosition.z, forKey: "realitykitImmersivePosZ")
-            defaults.set(immersionAmount, forKey: "realitykitImmersionAmount")
-            defaults.set(controlState.pinnedStageScale, forKey: "realitykitPinnedStageScale")
-            defaults.set(controlState.pinnedStageHeight, forKey: "realitykitPinnedStageHeight")
-            defaults.set(controlState.isInteractive, forKey: kImmersiveLockedKey)
-            defaults.set(viewModel.streamSettings.realitykitRendererCurvature, forKey: "realitykitImmersiveCurvature")
-            defaults.set(viewModel.streamSettings.gamma, forKey: "realitykitImmersiveGamma")
-            defaults.set(viewModel.streamSettings.saturation, forKey: "realitykitImmersiveSaturation")
-            defaults.set(viewModel.streamSettings.brightness, forKey: "realitykitImmersiveBrightness")
-            defaults.set(viewModel.streamSettings.pqExposure, forKey: "realitykitImmersivePqExposure")
+            defaults.set(screenScale, forKey: .realitykitImmersiveScale)
+            defaults.set(screenPosition.x, forKey: .realitykitImmersivePosX)
+            defaults.set(screenPosition.y, forKey: .realitykitImmersivePosY)
+            defaults.set(screenPosition.z, forKey: .realitykitImmersivePosZ)
+            defaults.set(immersionAmount, forKey: .realitykitImmersionAmount)
+            defaults.set(controlState.pinnedStageScale, forKey: .realitykitPinnedStageScale)
+            defaults.set(controlState.pinnedStageHeight, forKey: .realitykitPinnedStageHeight)
+            defaults.set(controlState.isInteractive, forKey: .immersiveLocked)
+            defaults.set(viewModel.streamSettings.realitykitRendererCurvature, forKey: .realitykitImmersiveCurvature)
+            defaults.set(viewModel.streamSettings.gamma, forKey: .realitykitImmersiveGamma)
+            defaults.set(viewModel.streamSettings.saturation, forKey: .realitykitImmersiveSaturation)
+            defaults.set(viewModel.streamSettings.brightness, forKey: .realitykitImmersiveBrightness)
+            defaults.set(viewModel.streamSettings.pqExposure, forKey: .realitykitImmersivePqExposure)
         } else {
-            defaults.set(volumeHeight, forKey: "realitykitHeight")
-            defaults.set(volumeDepthOffset, forKey: "realitykitDepthOffset")
+            defaults.set(volumeHeight, forKey: .realitykitHeight)
+            defaults.set(volumeDepthOffset, forKey: .realitykitDepthOffset)
         }
         viewModel.streamSettings.save()
     }
@@ -4078,69 +2963,8 @@ struct _RealityKitStreamView: View {
 extension Notification.Name {
     static let mainViewWindowClosed = Notification.Name("MainViewWindowClosed")
     static let resumeStreamFromMenu = Notification.Name("ResumeStreamFromMenu")
-    static let rkStreamDidTeardown = Notification.Name("RKStreamDidTeardown")
-    static let immersiveScreenWakeRequested = Notification.Name("ImmersiveScreenWakeRequested")
 }
 
-struct PCModifierToolbar<Content: View>: View {
-    @State private var ctrlActive = false
-    @State private var altActive = false
-    @State private var shiftActive = false
-    @State private var winActive = false
-    
-    @ViewBuilder let textField: Content
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Button("Esc") { sendInstantKey(0x1B) }
-                .buttonStyle(.bordered)
-            Button("Tab") { sendInstantKey(0x09) }
-                .buttonStyle(.bordered)
-            
-            Divider().frame(height: 24)
-            
-            textField
-            
-            Divider().frame(height: 24)
-            
-            Toggle("Win", isOn: Binding(get: { winActive }, set: { val in
-                winActive = val; sendToggleKey(0x5B, down: val)
-            })).toggleStyle(.button)
-            
-            Toggle("Ctrl", isOn: Binding(get: { ctrlActive }, set: { val in
-                ctrlActive = val; sendToggleKey(0xA2, down: val)
-            })).toggleStyle(.button)
-            
-            Toggle("Alt", isOn: Binding(get: { altActive }, set: { val in
-                altActive = val; sendToggleKey(0xA4, down: val)
-            })).toggleStyle(.button)
-            
-            Toggle("Shift", isOn: Binding(get: { shiftActive }, set: { val in
-                shiftActive = val; sendToggleKey(0xA0, down: val)
-            })).toggleStyle(.button)
-        }
-        .padding(12)
-        .glassBackgroundEffect()
-    }
-    
-    private func sendInstantKey(_ keyCode: Int16) {
-        let hidCode = Int16(bitPattern: 0x8000 | UInt16(keyCode))
-        LiSendKeyboardEvent(hidCode, 0x03, 0)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            LiSendKeyboardEvent(hidCode, 0x04, 0)
-        }
-    }
-    
-    private func sendToggleKey(_ keyCode: Int16, down: Bool) {
-        let hidCode = Int16(bitPattern: 0x8000 | UInt16(keyCode))
-        LiSendKeyboardEvent(hidCode, down ? 0x03 : 0x04, 0)
-    }
-}
-
-let MAX_WIDTH_METERS: Float = 2.0
-let MAX_CURVE_ANGLE: Float = 1.3
-let CURVED_MAX_WIDTH_METERS: Float = MAX_WIDTH_METERS
-let CURVED_MAX_ANGLE: Float = MAX_CURVE_ANGLE
 let GAZE_VERTICAL_OFFSET: Float = 0.015
 
 extension CollisionGroup {

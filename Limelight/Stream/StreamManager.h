@@ -16,6 +16,9 @@
 
 - (void) stopStream;
 - (void) stopStreamWithCompletion:(void (^)(void))completion;
+// See -[Connection terminateWithCompletion:stopped:]: `completion` may fire early on a stuck stop,
+// `stopped` only once the connection has really stopped.
+- (void) stopStreamWithCompletion:(void (^)(void))completion stopped:(void (^)(void))stopped;
 
 - (NSString*) getStatsOverlayText;
 

@@ -74,7 +74,7 @@ struct MainContentView: View {
                     .buttonStyle(.plain) // Remove button styling to make it look like text
                 }
                 .toolbar {
-                    if viewModel.activelyStreaming {
+                    if viewModel.streamInProgress {
                         ToolbarItem(placement: .cancellationAction) {
                             Button(viewModel.localized("resume_stream"), systemImage: "play.circle.fill") {
                                 // If the window is still open, this notification un-hides the controls
@@ -84,7 +84,10 @@ struct MainContentView: View {
                                 let dest = viewModel.getStreamDestination()
                                 switch dest {
                                 case .window(let id):
-                                    if let config = viewModel.savedStreamConfigForResume {
+                                    if let session = viewModel.activeSession, session.isLive {
+                                        openWindow(id: id, value: session.config)
+                                    } else if let config = viewModel.savedStreamConfigForResume {
+                                        viewModel.beginSession(config: config)
                                         openWindow(id: id, value: config)
                                     } else {
                                         openWindow(id: id)
@@ -98,24 +101,14 @@ struct MainContentView: View {
                         }
                         ToolbarItem(placement: .destructiveAction) {
                             Button(viewModel.localized("stop"), systemImage: "stop.circle.fill") {
-                                Task {
-                                    // Post notification first — RealityKitStreamView/UIKitStreamView
-                                    // receive it and call triggerCloseSequence/teardown which handles
-                                    // dismissing their own window. Avoid calling dismissWindow here for
-                                    // RealityKit volume streams: the stream view dismisses itself via
-                                    // triggerCloseSequence, and a second dismissWindow call racing with
-                                    // an in-flight window animation can cause intermittent crashes.
-                                    NotificationCenter.default.post(name: Notification.Name("RequestStreamCloseFromMainMenu"), object: nil)
-                                    viewModel.userDidRequestDisconnect()
-                                    // Classic UIKit window doesn't observe the notification for self-dismiss,
-                                    // so we still need to dismiss it from here.
-                                    if viewModel.streamSettings.renderer == .classic {
-                                        dismissWindow(id: "classicStreamingWindow")
-                                    }
-                                    await viewModel.waitForTeardown(timeout: 1.2)
-                                    if viewModel.streamState != .idle {
-                                        viewModel.forceResetStreamLifecycleIfNeeded()
-                                    }
+                                // Stops the session and sets shouldCloseStream; RealityKitStreamView
+                                // dismisses itself via triggerCloseSequence. Avoid calling dismissWindow
+                                // here for RealityKit volume streams: a second dismissWindow call racing
+                                // with an in-flight window animation can cause intermittent crashes.
+                                viewModel.userDidRequestDisconnect()
+                                // The classic UIKit window is dismissed from here.
+                                if viewModel.streamSettings.renderer == .classic {
+                                    dismissWindow(id: "classicStreamingWindow")
                                 }
                             }
                         }
@@ -168,8 +161,6 @@ struct MainContentView: View {
                 viewModel.loadSavedHosts()
             }
             .onAppear {
-                NotificationCenter.default.post(name: Notification.Name("MainViewDidAppear"), object: nil)
-                
                 // Start mDNS discovery immediately when the host list appears —
                 // matching the behaviour of the original iOS/iPad Moonlight app
                 // (beginForegroundRefresh in viewWillAppear:).
@@ -191,7 +182,7 @@ struct MainContentView: View {
                 // when the view appears so the split view doesn't look empty.
                 if selectedHost == nil {
                     var hostToSelect: TemporaryHost?
-                    if viewModel.activelyStreaming {
+                    if viewModel.streamInProgress {
                         if let streamingIp = viewModel.currentStreamConfig.host ?? viewModel.savedStreamConfigForResume?.host {
                             hostToSelect = viewModel.hosts.first(where: { 
                                 $0.address == streamingIp || 

@@ -54,22 +54,13 @@ struct DimmingPickerView: View {
     @EnvironmentObject private var viewModel: MainViewModel
     @Binding var dimLevel: Int
     @Binding var isPresented: Bool
-    @Binding var environmentSphereLevel: Int
-    @Binding var envPresetLevel: Int
     
     private let dimOptions: [(Int, String)] = [
         (0, "off"),
         (1, "dim_night"),
         (2, "dim_reactive_v1"),
         (4, "dim_eclipse"),
-        (5, "dim_midnight"),
-        (6, "dim_twilight"),
-        (7, "dim_dawn"),
-        (8, "dim_sunrise"),
-        (9, "dim_woodland"),
-        (10, "dim_reactive_v2"),
-        (12, "dim_starfield"),
-        (14, "dim_desert")
+        (10, "dim_reactive_v2")
     ]
     
     var body: some View {
@@ -92,10 +83,6 @@ struct DimmingPickerView: View {
                     let isActive = dimLevel == option.0
                     Button {
                         dimLevel = option.0
-                        if option.0 != 0 {
-                            environmentSphereLevel = 0
-                            envPresetLevel = 0
-                        }
                         isPresented = false
                     } label: {
                         Text(viewModel.localized(option.1))

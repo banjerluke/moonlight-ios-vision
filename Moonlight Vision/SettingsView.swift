@@ -306,6 +306,21 @@ struct SettingsView: View {
                                 settings.save()
                             }
                         }
+
+                    HStack {
+                        Label(viewModel.localized("text_anti_shimmer"), systemImage: "textformat.size")
+                        Spacer()
+                        Text(String(format: "%.2f", settings.realitykitTextAntiShimmer))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: $settings.realitykitTextAntiShimmer, in: 0...2, step: 0.05)
+                        .onChange(of: settings.realitykitTextAntiShimmer) { _, _ in
+                            saveTimer?.invalidate()
+                            saveTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
+                                settings.save()
+                            }
+                        }
                     
                     Toggle(isOn: $settings.dimPassthrough) {
                         Label(viewModel.localized("dim_passthrough"), systemImage: "moon.fill")
@@ -457,25 +472,7 @@ struct SettingsView: View {
                     .onChange(of: settings.rememberStreamSettings) { _, _ in settings.save() }
                     
                     Button(action: {
-                        // Reset Immersive View Preferences
-                        let defaults = UserDefaults.standard
-                        defaults.removeObject(forKey: "realitykitImmersiveScale")
-                        defaults.removeObject(forKey: "realitykitImmersivePosX")
-                        defaults.removeObject(forKey: "realitykitImmersivePosY")
-                        defaults.removeObject(forKey: "realitykitImmersivePosZ")
-                        defaults.removeObject(forKey: "realitykitImmersionAmount")
-                        defaults.removeObject(forKey: "realitykitPinnedStageScale")
-                        defaults.removeObject(forKey: "realitykitPinnedStageHeight")
-                        
-                        Task { @MainActor in
-                            StreamControlState.shared.immersiveScale = 0.8
-                            StreamControlState.shared.immersivePositionX = 0
-                            StreamControlState.shared.immersivePositionY = 1.0
-                            StreamControlState.shared.immersivePositionZ = -1.5
-                            StreamControlState.shared.immersionAmount = 0.0
-                            StreamControlState.shared.pinnedStageScale = 5.0
-                            StreamControlState.shared.pinnedStageHeight = 0.75
-                        }
+                        StreamControlState.shared.resetImmersiveTransform()
                     }) {
                         HStack {
                             Image(systemName: "visionpro")
@@ -507,10 +504,12 @@ struct SettingsView: View {
                     }
                     .confirmationDialog(viewModel.localized("reset_to_defaults"), isPresented: $showResetConfirmation, titleVisibility: .visible) {
                         Button(viewModel.localized("reset_all_settings"), role: .destructive) {
-                            settings.resetAllSettings()
+                            settings.resetToDefaults(includingSystemSettings: true)
+                            StreamControlState.shared.resetImmersiveTransform()
                         }
                         Button(viewModel.localized("reset_stream_settings_only"), role: .destructive) {
-                            settings.resetStreamSettingsOnly()
+                            settings.resetToDefaults(includingSystemSettings: false)
+                            StreamControlState.shared.resetImmersiveTransform()
                         }
                         Button(viewModel.localized("cancel"), role: .cancel) { }
                     } message: {

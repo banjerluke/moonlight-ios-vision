@@ -257,15 +257,15 @@ struct ImmersiveControlPanelView: View {
                     }
                     
                     // Audio Quality Mode
-                    let mixedMode = controlState.preferUninterruptedAudio
+                    let mixedMode = viewModel.streamSettings.preferUninterruptedAudio
                     ModernActionTile(
                         icon: mixedMode ? "exclamationmark.triangle" : "waveform",
                         title: mixedMode ? "Audio: Mixed Mode" : "Audio: High Quality",
                         isActive: mixedMode
                     ) {
                         withAnimation {
-                            controlState.preferUninterruptedAudio.toggle()
-                            UserDefaults.standard.set(controlState.preferUninterruptedAudio, forKey: "preferUninterruptedAudio")
+                            viewModel.streamSettings.preferUninterruptedAudio.toggle()
+                            viewModel.streamSettings.save()
                             
                             // Re-apply spatial audio to trigger the change
                             let currentMode = SpatialAudioMode(rawValue: viewModel.streamSettings.spatialAudioMode) ?? .window

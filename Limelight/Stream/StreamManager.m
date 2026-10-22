@@ -85,6 +85,10 @@
     _config.appVersion = appversion;
     _config.gfeVersion = gfeVersion;
     
+    if (self.isCancelled) {
+        return;
+    }
+    
     // resumeApp and launchApp handle calling launchFailed
     NSString* sessionUrl;
     if ([serverState hasSuffix:@"_SERVER_BUSY"]) {
@@ -104,6 +108,11 @@
     
     // Initializing the renderer must be done on the main thread
     dispatch_async(dispatch_get_main_queue(), ^{
+        // stopStream may have run during the synchronous HTTP phase above. It
+        // found no connection to stop, so don't create one now.
+        if (self.isCancelled) {
+            return;
+        }
         id<AnyVideoDecoderRenderer> __strong renderer = self->_rendererProvider();
 //        VideoDecoderRenderer* renderer = [[VideoDecoderRenderer alloc] initWithView:self->_renderView callbacks:self->_callbacks streamAspectRatio:(float)self->_config.width / (float)self->_config.height useFramePacing:self->_config.useFramePacing];
         self->_connection = [[Connection alloc] initWithConfig:self->_config renderer:renderer connectionCallbacks:self->_callbacks];
@@ -116,18 +125,28 @@
 
 - (void) stopStream
 {
+    [self cancel];
     [_connection terminate];
 }
 
 - (void) stopStreamWithCompletion:(void (^)(void))completion
 {
+    [self stopStreamWithCompletion:completion stopped:nil];
+}
+
+- (void) stopStreamWithCompletion:(void (^)(void))completion stopped:(void (^)(void))stopped
+{
+    [self cancel];
     if (!_connection) {
         if (completion) {
             dispatch_async(dispatch_get_main_queue(), ^{ completion(); });
         }
+        if (stopped) {
+            dispatch_async(dispatch_get_main_queue(), ^{ stopped(); });
+        }
         return;
     }
-    [_connection terminateWithCompletion:completion];
+    [_connection terminateWithCompletion:completion stopped:stopped];
 }
 
 - (BOOL) launchApp:(HttpManager*)hMan receiveSessionUrl:(NSString**)sessionUrl {

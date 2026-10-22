@@ -14,7 +14,6 @@
 #import "CoreAudioHelpers.h"
 #import "AudioStats.h"
 #import "DataManager.h"
-#import "TemporarySettings.h"
 
 #include <Accelerate/Accelerate.h>
 #import <AVFoundation/AVFoundation.h>
@@ -76,6 +75,11 @@
         _engine = nil;
     }
 #endif
+
+    // Paired with TPCircularBufferInit in initRingBuffer
+    if (_ringBuffer.buffer) {
+        TPCircularBufferCleanup(&_ringBuffer);
+    }
 }
 
 #if TARGET_OS_OSX

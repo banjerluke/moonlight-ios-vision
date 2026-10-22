@@ -89,7 +89,6 @@
 /* Begin PBXFileReference section */
 		3EC0C0A12E00000100000001 /* oblas_common.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; name = oblas_common.c; path = "moonlight-common-c/nanors/deps/obl/oblas_common.c"; sourceTree = "<group>"; };
 		3EC0C0A12E00000100000002 /* oblas_lite.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; name = oblas_lite.c; path = "moonlight-common-c/nanors/deps/obl/oblas_lite.c"; sourceTree = "<group>"; };
-		3E80AA6F2C4DF119006A10EA /* OpenSSL.xcframework */ = {isa = PBXFileReference; expectedSignature = "AppleDeveloperProgram:67RAULRX93:Marcin Krzyzanowski"; lastKnownFileType = wrapper.xcframework; name = OpenSSL.xcframework; path = ../Frameworks/OpenSSL.xcframework; sourceTree = "<group>"; };
 		983091DD24CEB69B00A0835D /* ConnectionTester.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = ConnectionTester.c; sourceTree = "<group>"; };
 		9857AEEE1EBE85E10084F99E /* rs.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; name = rs.c; path = "moonlight-common-c/nanors/rs.c"; sourceTree = "<group>"; };
 		9857AEEF1EBE85E10084F99E /* rs.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = rs.h; path = "moonlight-common-c/nanors/rs.h"; sourceTree = "<group>"; };
@@ -185,14 +184,6 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		3E80AA6E2C4DF119006A10EA /* Frameworks */ = {
-			isa = PBXGroup;
-			children = (
-				3E80AA6F2C4DF119006A10EA /* OpenSSL.xcframework */,
-			);
-			name = Frameworks;
-			sourceTree = "<group>";
-		};
 		9857AEED1EBE85D50084F99E /* nanors */ = {
 			isa = PBXGroup;
 			children = (
@@ -329,7 +320,6 @@
 				98AB2E191CAD423B0089BB98 /* src */,
 				98AB2DEF1CAD422B0089BB98 /* enet */,
 				FB290E2F19B37A4E004C83CF /* Products */,
-				3E80AA6E2C4DF119006A10EA /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};

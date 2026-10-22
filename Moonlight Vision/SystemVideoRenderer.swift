@@ -29,7 +29,6 @@ final class SystemVideoRenderer: NSObject, AnyVideoDecoderRenderer {
 
     private let synchronizer = AVSampleBufferRenderSynchronizer()
     private let callbacks: ConnectionCallbacks
-    private let onFirstFrame: (() -> Void)?
     private let onResolutionChange: ((Int, Int) -> Void)?
 
     private var videoFormat: Int32 = 0
@@ -49,9 +48,8 @@ final class SystemVideoRenderer: NSObject, AnyVideoDecoderRenderer {
     private var acceptingFrames = false
     private var lastDimensions: CMVideoDimensions?
 
-    init(callbacks: ConnectionCallbacks, onFirstFrame: (() -> Void)? = nil, onResolutionChange: ((Int, Int) -> Void)? = nil) {
+    init(callbacks: ConnectionCallbacks, onResolutionChange: ((Int, Int) -> Void)? = nil) {
         self.callbacks = callbacks
-        self.onFirstFrame = onFirstFrame
         self.onResolutionChange = onResolutionChange
         super.init()
         synchronizer.addRenderer(sampleRenderer)
@@ -100,6 +98,13 @@ final class SystemVideoRenderer: NSObject, AnyVideoDecoderRenderer {
         enqueuedCount = 0
         audioConfigured = false
         lastDimensions = nil
+    }
+
+    /// Stream teardown calls this before the connection stops; frames submitted after it are dropped.
+    func closeRenderGate() {
+        decodeLock.lock()
+        acceptingFrames = false
+        decodeLock.unlock()
     }
 
     func setHdrMode(_ enabled: Bool) {
@@ -212,9 +217,6 @@ final class SystemVideoRenderer: NSObject, AnyVideoDecoderRenderer {
         if decodeUnit.pointee.frameType == FRAME_TYPE_IDR && !firstFrameEmitted {
             firstFrameEmitted = true
             callbacks.videoContentShown()
-            if let onFirstFrame = onFirstFrame {
-                DispatchQueue.main.async { onFirstFrame() }
-            }
         }
 
         return DR_OK
