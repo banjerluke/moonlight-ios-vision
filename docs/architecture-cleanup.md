@@ -126,7 +126,7 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 | C settings | @thread:thr_rtzxjcquha | bb/cleanup-c-settings-fixes-key-registry-thr_rtzxjcquha | merged |
 | D deletions | @thread:thr_978eyitr5x | bb/cleanup-d-dead-code-and-asset-deletions-thr_978eyitr5x | merged |
 | E+F StreamSession | @thread:thr_f7mz2irbqy | own worktree | phase 1: extractions + design proposal |
-| G shimmer | @thread:thr_c5z7nwws7h | bb/cleanup-g-realitykit-shimmer-sampler-filtering-thr_c5z7nwws7h | merged (sampler); present-race fix sent to A; needs Luke on device |
+| G shimmer | @thread:thr_c5z7nwws7h | bb/cleanup-g-realitykit-shimmer-sampler-filtering-thr_c5z7nwws7h | merged (sampler + A follow-up `32eb221`, present via command buffer); needs Luke on device |
 | Review | | | |
 
 ## Decisions and notes
