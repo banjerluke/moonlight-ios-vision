@@ -125,7 +125,7 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 | B lifecycle | @thread:thr_hewxt4aksp | bb/cleanup-b-connection-audio-lifecycle-fixes-thr_hewxt4aksp | merged |
 | C settings | @thread:thr_rtzxjcquha | bb/cleanup-c-settings-fixes-key-registry-thr_rtzxjcquha | merged |
 | D deletions | @thread:thr_978eyitr5x | bb/cleanup-d-dead-code-and-asset-deletions-thr_978eyitr5x | merged |
-| E+F StreamSession | @thread:thr_f7mz2irbqy | own worktree | phase 1: extractions + design proposal |
+| E+F StreamSession | @thread:thr_f7mz2irbqy | own worktree | E done (4057→3200 lines); F design approved, phase 2 running |
 | G shimmer | @thread:thr_c5z7nwws7h | bb/cleanup-g-realitykit-shimmer-sampler-filtering-thr_c5z7nwws7h | merged (sampler + A follow-up `32eb221`, present via command buffer); needs Luke on device |
 | Review | | | |
 
@@ -171,3 +171,14 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 2. If it still shimmers, add `sampler.lodBias = 0.5` in `videoTexture(_:)`. That's one line; it trades a softer picture for less aliasing.
 3. Change the stream resolution and the screen distance. Does the shimmer track the texel-to-pixel ratio?
 4. Turn HDR off. If the shimmer goes, the cause is linear-vs-PQ values in the `rgba16Float` texture, on the decoder side.
+- E: extracted `PCModifierToolbar.swift` and `CurvedScreenMesh.swift`. Deleted the dead dimmer-gradient/moonlight-cycle code (no callers since `7829498`, yet it rendered eight 1024px textures per immersive launch) and the inert 360° skybox (no assets ship, and its levels are always 0).
+- F design approved, with changes:
+  - `streamState` is computed from `activeSession?.phase`, rather than mirrored through a sink
+  - the end-of-session policy runs in an end hook
+  - F also fixes the `terminate`-before-`main` orphan race in `Connection.m`
+
+### Open questions for Luke (continued)
+- Dimming-picker options 5–14 (Midnight, Twilight, Dawn…) have done nothing visible since `7829498`; only levels 1–4 set an opacity. Remove them from the picker, or bring them back?
+- `hideHandsIn360Environment` has no effect, because the 360° environment was never wired up. Remove the setting?
+- Luke: the shimmer is on the curved screen viewed roughly head-on, and sharp text is worst, so it's aliasing at ~1:1 rather than an anisotropy problem. G is adding a live "Text anti-shimmer" mip-bias setting (default 0) so it can be tuned on device. Luke approved removing dimming options 5–14 and `hideHandsIn360Environment`; that's assigned to F's final commit. When everything is done, push the integration branch to `origin` (banjerluke) for Luke's HDR test.
+- G follow-up `faf24ad`: a "Text Anti-Shimmer" setting (0–2, default 0) drives the sampler's `lodMinClamp`, and the SBS `dynamic_min_lod_clamp`. An offscreen test on macOS showed `UnlitMaterial` ignores `lodBias`, but `lodMinClamp` gives graded softening. Start at 0.5; the useful range is 0–1. If no value is acceptable, the next step is a ShaderGraph multi-tap prefilter.

@@ -230,6 +230,7 @@
 "gamepad_home" = "游戏手柄 Home";
 "stats_overlay" = "统计信息";
 "screen_tilt" = "屏幕倾斜";
+"text_anti_shimmer" = "文字防闪烁";
 "hide_panel" = "隐藏面板";
 "semi_short" = "半沉浸";
 "full_short" = "全沉浸";

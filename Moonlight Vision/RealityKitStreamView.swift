@@ -538,6 +538,9 @@ struct _RealityKitStreamView: View {
             .onChange(of: firstFrameReceived) { _, _ in 
                 updateScreenMaterial() 
             }
+            .onChange(of: viewModel.streamSettings.realitykitTextAntiShimmer) { _, _ in
+                updateScreenMaterial()
+            }
 
         return controlStateSynced
     }
@@ -1575,6 +1578,9 @@ struct _RealityKitStreamView: View {
         sampler.maxAnisotropy = 16
         sampler.sAddressMode = .clampToEdge
         sampler.tAddressMode = .clampToEdge
+        // Text anti-shimmer. UnlitMaterial ignores lodBias, so raise the mip floor instead; at ~1:1
+        // texel-to-pixel that softens the same way. The SBS graph gets it as its minLod input.
+        sampler.lodMinClamp = viewModel.streamSettings.realitykitTextAntiShimmer
         return .init(texture, sampler: .init(sampler))
     }
 
@@ -1622,6 +1628,7 @@ struct _RealityKitStreamView: View {
         if videoMode == .sideBySide3D {
             if var sMat = surfaceMaterial {
                 try? sMat.setParameter(name: "texture", value: .textureResource(self.texture))
+                try? sMat.setParameter(name: "minLod", value: .float(viewModel.streamSettings.realitykitTextAntiShimmer))
                 surfaceMaterial = sMat
                 screen.model?.materials = [sMat]
             } else {
