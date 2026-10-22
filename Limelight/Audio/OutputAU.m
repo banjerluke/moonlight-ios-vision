@@ -14,7 +14,6 @@
 #import "CoreAudioHelpers.h"
 #import "AudioStats.h"
 #import "DataManager.h"
-#import "TemporarySettings.h"
 
 #include <Accelerate/Accelerate.h>
 #import <AVFoundation/AVFoundation.h>
