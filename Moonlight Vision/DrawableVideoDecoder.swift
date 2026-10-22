@@ -20,6 +20,7 @@ import MetalKit
 import QuartzCore // For CADisplayLink
 import RealityKit
 import SwiftUI
+import Synchronization
 import VideoToolbox
 import CoreFoundation
 
@@ -118,6 +119,17 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     private var isStopped = false
     
     private let inflightSemaphore = DispatchSemaphore(value: 3)
+
+    /// Checked on the VT output thread before each frame touches the drawable queues.
+    private let renderGate = Atomic<Bool>(true)
+
+    /// Per-frame render gate. Closing it makes decoded frames drop instead of rendering; stop()
+    /// closes it first thing, and stream teardown can close it earlier from any thread.
+    var isRenderingEnabled: Bool {
+        get { renderGate.load(ordering: .acquiring) }
+        set { renderGate.store(newValue, ordering: .releasing) }
+    }
+
     lazy var mtlDevice: MTLDevice = {
         guard let device = MTLCreateSystemDefaultDevice() else {
             fatalError()
@@ -199,7 +211,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         presentationTimeStamp _: CMTime,
         presentationDuration _: CMTime?
     ) {
-        guard let imageBuffer = imageBuffer else { return }
+        guard let imageBuffer = imageBuffer, isRenderingEnabled else { return }
         
         if inflightSemaphore.wait(timeout: .now()) != .success {
             return
@@ -586,6 +598,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
 
     func stop() {
         print("DrawableVideoDecoder: stop()")
+        isRenderingEnabled = false
         displayLink?.invalidate()
         displayLink = nil
 
