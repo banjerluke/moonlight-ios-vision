@@ -269,20 +269,23 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         // PQ must follow the **frame** transfer function. Never force PQ just because the user enabled
         // "HDR display mode" — that was decoding SDR streams through pqInv() (too dark) while true PQ
         // still looked wrong next to the mistaken baseline.
+        // With HDR enabled VideoToolbox always outputs 10-bit buffers, even when the host sends SDR
+        // (host display HDR off), so the untagged/mistagged fallbacks also require the host's HDR mode.
+        let hostHdrActive = hdrEnabled && LiGetCurrentHostDisplayHdrMode()
         var isPQ = false
         var isHLG = false
         if let tfVal = CVBufferGetAttachment(imageBuffer, kCVImageBufferTransferFunctionKey, nil)?.takeUnretainedValue(),
            CFGetTypeID(tfVal) == CFStringGetTypeID() {
             isPQ = CFEqual(tfVal as! CFString, kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ)
             isHLG = CFEqual(tfVal as! CFString, kCVImageBufferTransferFunction_ITU_R_2100_HLG)
-        } else if hdrEnabled {
+        } else if hostHdrActive {
             isPQ = looksLikeBt2020TenBitStream
         }
 
         // Safety net for streams whose transfer function is mis-tagged as SDR upstream of us.
-        // Gated on the *negotiated* 10-bit format, so 8-bit SDR streams in HDR mode still take
-        // the SDR path and never get decoded through pqInv().
-        if !isPQ && !isHLG && hdrEnabled && looksLikeBt2020TenBitStream
+        // Gated on the host's HDR mode and the *negotiated* 10-bit format, so SDR from the host
+        // (8-bit, or Main10 with host HDR off) still takes the SDR path and never goes through pqInv().
+        if !isPQ && !isHLG && hostHdrActive && looksLikeBt2020TenBitStream
             && (videoFormat & VIDEO_FORMAT_MASK_10BIT) != 0 {
             isPQ = true
         }
@@ -336,7 +339,11 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                  kCVPixelFormatType_444YpCbCr10PackedBiPlanarFullRange:
                 return true
             default:
-                return (formatDesc != nil) ? CVMetalHelpers.getIsFullRangeForVideoFormat(formatDesc!) : false
+                // formatDesc is swapped on the submit thread at each IDR; read it once.
+                if let desc = formatDesc {
+                    return CVMetalHelpers.getIsFullRangeForVideoFormat(desc)
+                }
+                return false
             }
         }()
 
@@ -741,6 +748,8 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         defer { decodeLock.unlock() }
 
         if let session = session {
+            // Let in-flight output callbacks finish before the render state below is torn down.
+            VTDecompressionSessionWaitForAsynchronousFrames(session)
             VTDecompressionSessionInvalidate(session)
             self.session = nil
         }
@@ -785,10 +794,12 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                     LiCompleteVideoFrame(handle, DR_OK)
                     continue
                 }
-                self.decodeLock.lock()
-                let result = self.acceptingFrames ? DrSubmitDecodeUnit(du) : DR_OK
-                self.decodeLock.unlock()
-                LiCompleteVideoFrame(handle, result)
+                autoreleasepool {
+                    self.decodeLock.lock()
+                    let result = self.acceptingFrames ? DrSubmitDecodeUnit(du) : DR_OK
+                    self.decodeLock.unlock()
+                    LiCompleteVideoFrame(handle, result)
+                }
             }
             print("DrawableVideoDecoder: decode thread exited")
         }
