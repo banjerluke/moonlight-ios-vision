@@ -76,6 +76,11 @@
         _engine = nil;
     }
 #endif
+
+    // Paired with TPCircularBufferInit in initRingBuffer
+    if (_ringBuffer.buffer) {
+        TPCircularBufferCleanup(&_ringBuffer);
+    }
 }
 
 #if TARGET_OS_OSX
