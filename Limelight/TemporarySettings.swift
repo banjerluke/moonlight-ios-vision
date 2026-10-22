@@ -21,7 +21,6 @@ enum SettingsKey: String {
     case fpsMouseCapture
     case realitykitRendererTilt
     case realitykitScreenCornerRadius
-    case realitykitTextAntiShimmer
     case realitykitImmersiveMode
     case reactiveLightingEnabled
     case useSystemVideoRenderer
@@ -133,7 +132,6 @@ public class TemporarySettings: NSObject {
     @objc public var realitykitRendererTilt: Float = 0.0
     @objc public var realitykitScreenCornerRadius: Float = 0.018
     /// Minimum mip level the video is sampled at. Above 0 it softens text that shimmers at ~1:1 texel-to-pixel.
-    @objc public var realitykitTextAntiShimmer: Float = 0.0
     @objc public var realitykitImmersiveMode: Bool = false
     @objc public var reactiveLightingEnabled: Bool = false
     /// RealityKit mode: render through AVSampleBufferVideoRenderer + VideoMaterial (system pipeline, true HDR/EDR)
@@ -283,7 +281,6 @@ public class TemporarySettings: NSObject {
             self.realitykitRendererCurvature = settings.realitykitRendererCurvature?.floatValue ?? 0
             self.realitykitRendererTilt = UserDefaults.standard.object(forKey: .realitykitRendererTilt) as? Float ?? 0.0
             self.realitykitScreenCornerRadius = UserDefaults.standard.object(forKey: .realitykitScreenCornerRadius) as? Float ?? 0.018
-            self.realitykitTextAntiShimmer = UserDefaults.standard.object(forKey: .realitykitTextAntiShimmer) as? Float ?? 0.0
             self.dimPassthrough = settings.dimPassthrough?.boolValue ?? false
             
             self.realitykitImmersiveMode = UserDefaults.standard.bool(forKey: .realitykitImmersiveMode)
@@ -339,7 +336,6 @@ public class TemporarySettings: NSObject {
         UserDefaults.standard.set(self.uikitWindowCornerRadius, forKey: .uikitWindowCornerRadius)
         UserDefaults.standard.set(self.uikitWindowPadding, forKey: .uikitWindowPadding)
         UserDefaults.standard.set(self.realitykitScreenCornerRadius, forKey: .realitykitScreenCornerRadius)
-        UserDefaults.standard.set(self.realitykitTextAntiShimmer, forKey: .realitykitTextAntiShimmer)
         UserDefaults.standard.set(self.realitykitRendererTilt, forKey: .realitykitRendererTilt)
         UserDefaults.standard.set(self.spatialAudioMode, forKey: .spatialAudioMode)
         UserDefaults.standard.set(self.preferUninterruptedAudio, forKey: .preferUninterruptedAudio)
@@ -427,7 +423,6 @@ public class TemporarySettings: NSObject {
         self.realitykitRendererCurvature = 0.0
         self.realitykitRendererTilt = 0.0
         self.realitykitScreenCornerRadius = 0.018
-        self.realitykitTextAntiShimmer = 0.0
 
         // Saved placement and per-mode overrides fall back to their defaults once removed
         let defaults = UserDefaults.standard
