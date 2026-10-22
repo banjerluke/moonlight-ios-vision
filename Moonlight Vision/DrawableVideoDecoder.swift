@@ -86,8 +86,9 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     /// If true, we'll do pacing logic in displayLink
     private var framePacing: Bool = false
 
-    /// Store parameter set data for H.264 / HEVC
-    private var parameterSetBuffers: [[UInt8]] = []
+    /// Parameter sets (VPS/SPS/PPS) collected for the next IDR's format description.
+    /// NSData keeps each buffer at a stable address while CoreMedia reads it.
+    private var parameterSetBuffers: [NSData] = []
 
     /// HDR metadata
     private var masteringDisplayColorVolume: Data?
@@ -739,8 +740,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                     || bufferType == BUFFER_TYPE_PPS
                 {
                     let startLen = (dataPtr[2] == 0x01) ? 3 : 4
-                    let newData = Data(bytes: dataPtr + startLen, count: Int(length) - startLen)
-                    parameterSetBuffers.append([UInt8](newData))
+                    parameterSetBuffers.append(NSData(bytes: dataPtr + startLen, length: Int(length) - startLen))
                 }
                 return DR_OK
             }
@@ -829,25 +829,30 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         }
     }
 
-    private func createH264FormatDescription() -> CMVideoFormatDescription? {
-        let parameterSetCount = parameterSetBuffers.count
-        var paramPtrs: [UnsafePointer<UInt8>] = []
-        var paramSizes: [Int] = []
+    /// Hands the collected parameter sets to the caller and clears them, so the next IDR
+    /// starts from an empty list.
+    private func takeParameterSets() -> [NSData] {
+        let parameterSets = parameterSetBuffers
+        parameterSetBuffers.removeAll()
+        return parameterSets
+    }
 
-        for (index, ps) in parameterSetBuffers.enumerated() {
-            paramPtrs.append(UnsafePointer<UInt8>(parameterSetBuffers[index]))
-            paramSizes.append(ps.count)
-        }
+    private func createH264FormatDescription() -> CMVideoFormatDescription? {
+        let parameterSets = takeParameterSets()
+        let paramPtrs = parameterSets.map { $0.bytes.assumingMemoryBound(to: UInt8.self) }
+        let paramSizes = parameterSets.map(\.length)
 
         var fromatDesc: CMFormatDescription?
-        let status = CMVideoFormatDescriptionCreateFromH264ParameterSets(
-            allocator: kCFAllocatorDefault,
-            parameterSetCount: parameterSetCount,
-            parameterSetPointers: paramPtrs,
-            parameterSetSizes: paramSizes,
-            nalUnitHeaderLength: Int32(NAL_LENGTH_PREFIX_SIZE),
-            formatDescriptionOut: &fromatDesc
-        )
+        let status = withExtendedLifetime(parameterSets) {
+            CMVideoFormatDescriptionCreateFromH264ParameterSets(
+                allocator: kCFAllocatorDefault,
+                parameterSetCount: parameterSets.count,
+                parameterSetPointers: paramPtrs,
+                parameterSetSizes: paramSizes,
+                nalUnitHeaderLength: Int32(NAL_LENGTH_PREFIX_SIZE),
+                formatDescriptionOut: &fromatDesc
+            )
+        }
 
         if status != noErr {
             print("Failed to create H264 format description: \(status)")
@@ -858,14 +863,9 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     }
 
     private func createHEVCFormatDescription() -> CMVideoFormatDescription? {
-        let parameterSetCount = parameterSetBuffers.count
-        var paramPtrs: [UnsafePointer<UInt8>] = []
-        var paramSizes: [Int] = []
-
-        for ps in parameterSetBuffers {
-            paramPtrs.append(UnsafePointer<UInt8>(ps))
-            paramSizes.append(ps.count)
-        }
+        let parameterSets = takeParameterSets()
+        let paramPtrs = parameterSets.map { $0.bytes.assumingMemoryBound(to: UInt8.self) }
+        let paramSizes = parameterSets.map(\.length)
 
         let videoFormatParams = NSMutableDictionary()
 
@@ -877,15 +877,17 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         }
 
         var formatDesc: CMFormatDescription?
-        let status = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
-            allocator: kCFAllocatorDefault,
-            parameterSetCount: parameterSetCount,
-            parameterSetPointers: paramPtrs,
-            parameterSetSizes: paramSizes,
-            nalUnitHeaderLength: Int32(NAL_LENGTH_PREFIX_SIZE),
-            extensions: videoFormatParams as CFDictionary,
-            formatDescriptionOut: &formatDesc
-        )
+        let status = withExtendedLifetime(parameterSets) {
+            CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+                allocator: kCFAllocatorDefault,
+                parameterSetCount: parameterSets.count,
+                parameterSetPointers: paramPtrs,
+                parameterSetSizes: paramSizes,
+                nalUnitHeaderLength: Int32(NAL_LENGTH_PREFIX_SIZE),
+                extensions: videoFormatParams as CFDictionary,
+                formatDescriptionOut: &formatDesc
+            )
+        }
 
         if status != noErr {
             print("Failed to create HEVC format description: \(status)")
