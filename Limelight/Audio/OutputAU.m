@@ -333,7 +333,7 @@ static OSStatus renderCallbackDirect(void * __nullable inRefCon,
     __block AVAudioSession *session = nil;
     __block NSError *error = nil;
 
-    dispatch_sync(dispatch_get_main_queue(), ^{
+    void (^configureSessionBlock)(void) = ^{
         session = [AVAudioSession sharedInstance];
 
         // CRITICAL: We MUST activate the audio session before instantiating AVAudioEngine!
@@ -392,7 +392,13 @@ static OSStatus renderCallbackDirect(void * __nullable inRefCon,
             _engine = nil;
         }
         _engine = [[AVAudioEngine alloc] init];
-    });
+    };
+
+    if ([NSThread isMainThread]) {
+        configureSessionBlock();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), configureSessionBlock);
+    }
 
     [session setPreferredSampleRate:_sampleRateOpus error:&error];
     if (error) {
