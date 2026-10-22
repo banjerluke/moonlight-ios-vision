@@ -103,10 +103,12 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     /// "Lowest Latency": a dedicated thread decodes each frame as soon as it is reassembled
     /// instead of waiting for the next display-link tick on the main thread.
     private var decodeThread: Thread?
-    /// Serialises frame submission with stop(), which the library calls before it wakes
-    /// the decode thread out of LiWaitForNextVideoFrame().
+    /// Serialises frame submission (decode thread or display link) with stop() and setHdrMode(),
+    /// which the library calls from its own threads.
     private let decodeLock = NSLock()
-    private var decodeThreadActive = false
+    private var acceptingFrames = false
+    /// Signalled when the decode thread exits, so stop() can wait for it.
+    private var decodeThreadExited: DispatchSemaphore?
 
     private let texture: TextureResource
     private var outTexture: MTLTexture?
@@ -268,9 +270,11 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         // "HDR display mode" — that was decoding SDR streams through pqInv() (too dark) while true PQ
         // still looked wrong next to the mistaken baseline.
         var isPQ = false
+        var isHLG = false
         if let tfVal = CVBufferGetAttachment(imageBuffer, kCVImageBufferTransferFunctionKey, nil)?.takeUnretainedValue(),
            CFGetTypeID(tfVal) == CFStringGetTypeID() {
             isPQ = CFEqual(tfVal as! CFString, kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ)
+            isHLG = CFEqual(tfVal as! CFString, kCVImageBufferTransferFunction_ITU_R_2100_HLG)
         } else if hdrEnabled {
             isPQ = looksLikeBt2020TenBitStream
         }
@@ -278,7 +282,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         // Safety net for streams whose transfer function is mis-tagged as SDR upstream of us.
         // Gated on the *negotiated* 10-bit format, so 8-bit SDR streams in HDR mode still take
         // the SDR path and never get decoded through pqInv().
-        if !isPQ && hdrEnabled && looksLikeBt2020TenBitStream
+        if !isPQ && !isHLG && hdrEnabled && looksLikeBt2020TenBitStream
             && (videoFormat & VIDEO_FORMAT_MASK_10BIT) != 0 {
             isPQ = true
         }
@@ -687,6 +691,10 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     }
 
     func start() {
+        decodeLock.lock()
+        acceptingFrames = true
+        decodeLock.unlock()
+
         if !framePacing {
             startDecodeThread()
             return
@@ -713,13 +721,25 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         displayLink?.invalidate()
         displayLink = nil
 
-        // The decode thread is blocked in LiWaitForNextVideoFrame() and exits once the library
-        // shuts the frame queue down, right after this call; it must not be joined here.
+        decodeLock.lock()
+        acceptingFrames = false
+        let threadExited = decodeThreadExited
+        decodeThreadExited = nil
+        decodeThread = nil
+        decodeLock.unlock()
+
+        // The library tears down its frame queue after stop() returns without joining pull-renderer
+        // threads, so wake the decode thread out of LiWaitForNextVideoFrame() and wait for it here.
+        if let threadExited {
+            LiWakeWaitForVideoFrame()
+            if threadExited.wait(timeout: .now() + 2) == .timedOut {
+                print("DrawableVideoDecoder: decode thread did not exit within 2s")
+            }
+        }
+
         decodeLock.lock()
         defer { decodeLock.unlock() }
-        decodeThreadActive = false
-        decodeThread = nil
-        
+
         if let session = session {
             VTDecompressionSessionInvalidate(session)
             self.session = nil
@@ -749,11 +769,13 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
 
     private func startDecodeThread() {
         print("DrawableVideoDecoder: start() decode-on-arrival thread")
+        let exited = DispatchSemaphore(value: 0)
         decodeLock.lock()
-        decodeThreadActive = true
+        decodeThreadExited = exited
         decodeLock.unlock()
 
         let thread = Thread { [weak self] in
+            defer { exited.signal() }
             var handle: VIDEO_FRAME_HANDLE?
             var du: PDECODE_UNIT?
             // Returns false once the connection shuts the frame queue down.
@@ -764,7 +786,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                     continue
                 }
                 self.decodeLock.lock()
-                let result = self.decodeThreadActive ? DrSubmitDecodeUnit(du) : DR_OK
+                let result = self.acceptingFrames ? DrSubmitDecodeUnit(du) : DR_OK
                 self.decodeLock.unlock()
                 LiCompleteVideoFrame(handle, result)
             }
@@ -785,7 +807,10 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                 continue
             }
 
-            let result = DrSubmitDecodeUnit(du)
+            // stop() runs on a library thread and may race this main-thread callback.
+            decodeLock.lock()
+            let result = acceptingFrames ? DrSubmitDecodeUnit(du) : DR_OK
+            decodeLock.unlock()
             LiCompleteVideoFrame(handle, result)
 
             if framePacing && frameRate <= 60 {
@@ -883,7 +908,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
             formatDesc: formatDesc,
             decodeUnit: decodeUnit
         ) else {
-            free(dataPtr)
+            // createSampleBuffer has already released dataPtr (directly or via its block buffer).
             return DR_NEED_IDR
         }
 
@@ -1089,6 +1114,8 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
 
     // MARK: - Creating a Sample Buffer
 
+    /// Takes ownership of dataPtr in every outcome: handed to the CMBlockBuffer on success,
+    /// released (directly or by that block buffer) on failure.
     private func createSampleBuffer(
         dataPtr: UnsafeMutablePointer<UInt8>,
         length: Int,
@@ -1114,6 +1141,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
             )
             if statusDataBlock != kCMBlockBufferNoErr {
                 print("CMBlockBufferCreateWithMemoryBlock failed: \(statusDataBlock)")
+                free(dataPtr)
                 return nil
             }
         }
@@ -1283,32 +1311,15 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     // MARK: - HDR Mode
 
     func setHdrMode(_ enabled: Bool) {
-        var metadataChanged = false
-
         let displayMetadata = HDRParsingUtils.parseHDRDisplayMetadata(enabled)
-
-        if let displayMetadata = displayMetadata,
-           masteringDisplayColorVolume == nil ||
-           masteringDisplayColorVolume != displayMetadata
-        {
-            masteringDisplayColorVolume = displayMetadata
-            metadataChanged = true
-        } else if masteringDisplayColorVolume != nil {
-            masteringDisplayColorVolume = nil
-            metadataChanged = true
-        }
-
         let lightMetadata = HDRParsingUtils.parseHDRLightMetadata(enabled)
-        if let lightMetadata = lightMetadata,
-           contentLightLevelInfo == nil ||
-           contentLightLevelInfo != lightMetadata
-        {
-            contentLightLevelInfo = lightMetadata
-            metadataChanged = true
-        } else if contentLightLevelInfo != nil {
-            contentLightLevelInfo = nil
-            metadataChanged = true
-        }
+
+        // Frames may be submitted concurrently from the decode thread, which reads this metadata.
+        decodeLock.lock()
+        let metadataChanged = displayMetadata != masteringDisplayColorVolume || lightMetadata != contentLightLevelInfo
+        masteringDisplayColorVolume = displayMetadata
+        contentLightLevelInfo = lightMetadata
+        decodeLock.unlock()
 
         if metadataChanged {
             updateHDRMetadata()

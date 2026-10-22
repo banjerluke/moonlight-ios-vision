@@ -44,6 +44,9 @@ final class SystemVideoRenderer: NSObject, AnyVideoDecoderRenderer {
     private var timelineAnchored = false
     private var enqueuedCount = 0
     private var audioConfigured = false
+    /// stop() and setHdrMode() arrive on library threads while frames are submitted on main.
+    private let decodeLock = NSLock()
+    private var acceptingFrames = false
     private var lastDimensions: CMVideoDimensions?
 
     init(callbacks: ConnectionCallbacks, onFirstFrame: (() -> Void)? = nil, onResolutionChange: ((Int, Int) -> Void)? = nil) {
@@ -64,6 +67,9 @@ final class SystemVideoRenderer: NSObject, AnyVideoDecoderRenderer {
 
     func start() {
         print("SystemVideoRenderer: start()")
+        decodeLock.lock()
+        acceptingFrames = true
+        decodeLock.unlock()
 
         displayLink = CADisplayLink(target: self, selector: #selector(displayLinkCallback(_:)))
         displayLink?.preferredFrameRateRange = CAFrameRateRange(
@@ -79,6 +85,10 @@ final class SystemVideoRenderer: NSObject, AnyVideoDecoderRenderer {
         print("SystemVideoRenderer: stop()")
         displayLink?.invalidate()
         displayLink = nil
+
+        decodeLock.lock()
+        defer { decodeLock.unlock() }
+        acceptingFrames = false
         synchronizer.setRate(0, time: .zero)
         sampleRenderer.flush()
         formatDesc = nil
@@ -95,9 +105,11 @@ final class SystemVideoRenderer: NSObject, AnyVideoDecoderRenderer {
     func setHdrMode(_ enabled: Bool) {
         let newMdcv = HDRParsingUtils.parseHDRDisplayMetadata(enabled)
         let newClli = HDRParsingUtils.parseHDRLightMetadata(enabled)
+        decodeLock.lock()
         let changed = (newMdcv != masteringDisplayColorVolume) || (newClli != contentLightLevelInfo)
         masteringDisplayColorVolume = newMdcv
         contentLightLevelInfo = newClli
+        decodeLock.unlock()
         if changed {
             // Recreate the format description with the new metadata on the next IDR.
             LiRequestIdrFrame()
@@ -111,7 +123,10 @@ final class SystemVideoRenderer: NSObject, AnyVideoDecoderRenderer {
         var du: PDECODE_UNIT?
         while LiPollNextVideoFrame(&handle, &du) {
             guard let handle = handle, let du = du else { continue }
-            LiCompleteVideoFrame(handle, DrSubmitDecodeUnit(du))
+            decodeLock.lock()
+            let result = acceptingFrames ? DrSubmitDecodeUnit(du) : DR_OK
+            decodeLock.unlock()
+            LiCompleteVideoFrame(handle, result)
         }
     }
 

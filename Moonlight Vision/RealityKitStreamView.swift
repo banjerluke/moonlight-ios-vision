@@ -2480,6 +2480,10 @@ struct _RealityKitStreamView: View {
                 return
             }
 
+            // A soft reconnect can reuse this view after the system renderer was turned off;
+            // drop its stale sink so updateScreenMaterial() binds the Metal texture again.
+            self.systemRenderer = nil
+            self.systemVideoMaterial = nil
             self.recreateStreamTexture()
 
             // Set controller support reference for rumble forwarding
