@@ -179,7 +179,7 @@ final class StreamSession: ObservableObject {
     private func launchAttempt() {
         guard let port else { return }
         guard let support = ControllerSupport(config: config, delegate: port.controllerDelegate) else {
-            teardown(ending: .startFailed(message: "Couldn't set up controller support"))
+            teardown(ending: .startFailed(message: MainViewModel.localizedStatic("controller_setup_failed")))
             return
         }
         let gen = generation
@@ -196,7 +196,7 @@ final class StreamSession: ObservableObject {
             },
             connectionCallbacks: callbacks
         ) else {
-            teardown(ending: .startFailed(message: "Couldn't create the stream"))
+            teardown(ending: .startFailed(message: MainViewModel.localizedStatic("stream_create_failed")))
             return
         }
         self.manager = manager
