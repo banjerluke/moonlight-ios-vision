@@ -121,7 +121,7 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 
 | Ticket | Thread | Branch | State |
 |---|---|---|---|
-| A decoder | @thread:thr_ewqb8v2dae | own worktree | running |
+| A decoder | @thread:thr_ewqb8v2dae | bb/cleanup-a-decoder-correctness-thr_ewqb8v2dae | merged |
 | B lifecycle | @thread:thr_hewxt4aksp | bb/cleanup-b-connection-audio-lifecycle-fixes-thr_hewxt4aksp | merged |
 | C settings | @thread:thr_rtzxjcquha | own worktree | running |
 | D deletions | @thread:thr_978eyitr5x | bb/cleanup-d-dead-code-and-asset-deletions-thr_978eyitr5x | merged |
@@ -134,3 +134,14 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 - The broken link on `fb34983` is out of scope for this work, but Luke should know about it.
 - B: `ArStart`/`ArStop` were never registered with the library, so `audioIsStopping` was always false and the audio engine was never stopped between streams. Removed them; `ArCleanup` now stops and releases the renderer. `OutputAU.m:336` `dispatch_sync(main)` under `initLock` isn't a deadlock today, but would become one if F ever blocks main waiting on stop or start. The same goes for A's `main.sync` in `setupLowLevelTexture`.
 - D: `OutputAU.m:17` imports `TemporarySettings.h` without using it (left for F or a later pass).
+- A: the decoder now owns a per-frame atomic gate, `isRenderingEnabled`, and closes it in `stop()`. The view's teardown doesn't use it yet; F should close it at the start of teardown and delete `renderGateOpen`. Each session now holds a strong reference to the decoder (`passRetained`) until the session is invalidated, so a missed `stop()` leaks rather than crashes.
+
+### Inputs for F, collected from wave 1
+- **Never block main on start or stop.** `setupLowLevelTexture` does `main.sync` and `OutputAU.m:336` does `dispatch_sync(main)`, both under `initLock`. Neither deadlocks today; both would if main ever waited on the connection. If you can, switch `setupLowLevelTexture` to `main.async`. That needs a lock around `drawableQueue`/`ambilightQueue`, and the `fatalError` when creating the `DrawableQueue` fails should go too.
+- **Off-main reads in `rendererProvider`.** It runs on StreamManager's background queue but reads `viewModel.streamSettings.enableHdr` and `connectionCallbacks`.
+- **A stop that never returns.** After B's `7101805`, if `LiStopConnection` never returns, the next `Connection.main` waits on `initLock` forever and the UI sits on "connecting". The timeout policy should surface that to the user.
+- **`MainViewModel.stream(app:)`** calls `prepareForNewStream()` before its guards, so a nil return still changes state.
+- **Off-main read of `firstFrameEmitted`.** It's read on main and written on the VT thread; harmless today. The phase enum should own first-frame state.
+- **Out of scope for F, but needs its own on-device ticket:**
+  - `OutputAU._isPlaying` is never set, because `-start` is never called. So route and configuration changes (e.g. connecting AirPods mid-stream) never reconnect the audio nodes.
+  - visionOS `ObservableConnectionManager.setMotionEventState`/`setControllerLed` only print, so gyro and LED never reach `ControllerSupport`.
