@@ -331,7 +331,7 @@ final class StreamSession: ObservableObject {
     /// on main once the stop returns or `stopTimeout` passes, whichever is first. The audio reset
     /// and the next attempt always wait for the real stop, however long it takes.
     private func stopConnection(resetAudio: Bool, completion: @escaping () -> Void) {
-        (renderer as? DrawableVideoDecoder)?.isRenderingEnabled = false
+        renderer?.closeRenderGate?()
         renderer = nil
         cancelIdrWatchdog()
         connectWatchdog?.invalidate()
