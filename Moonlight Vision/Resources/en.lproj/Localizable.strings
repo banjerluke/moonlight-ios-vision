@@ -71,6 +71,7 @@
 "stream_stopped_message" = "Please close this window before starting a new stream from the main menu.";
 "reconnecting" = "Reconnecting...";
 "reconnect_attempt" = "Attempt %d of %d";
+"previous_stream_still_stopping" = "The previous stream is still shutting down. Try again, or restart Moonlight if this keeps happening.";
 "open_main_menu" = "Open Main Menu";
 "resume_stream" = "Resume";
 "stream_error" = "Stream error";

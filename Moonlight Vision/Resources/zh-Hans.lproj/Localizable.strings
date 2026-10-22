@@ -72,6 +72,7 @@
 "stream_stopped_message" = "在返回主菜单前请先关闭此窗口，之后即可在主菜单重新启动串流。";
 "reconnecting" = "正在重连…";
 "reconnect_attempt" = "第 %d/%d 次尝试";
+"previous_stream_still_stopping" = "上一个串流仍在关闭。请重试；如果问题持续，请重启 Moonlight。";
 "open_main_menu" = "打开主菜单";
 "resume_stream" = "返回串流";
 "stream_error" = "串流错误";
