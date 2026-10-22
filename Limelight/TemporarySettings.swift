@@ -306,9 +306,6 @@ public class TemporarySettings: NSObject {
         defaults.removeObject(forKey: "realitykitDepthOffset")
         
         // Reset saved HDR values to correct neutral (1.0)
-        defaults.set(1.0, forKey: "realitykitGamma")
-        defaults.set(1.0, forKey: "realitykitSaturation")
-        defaults.set(1.0, forKey: "realitykitBrightness")
         defaults.set(1.0, forKey: "realitykitVolumeGamma")
         defaults.set(1.0, forKey: "realitykitVolumeSaturation")
         defaults.set(1.0, forKey: "realitykitVolumeBrightness")
@@ -393,9 +390,7 @@ public class TemporarySettings: NSObject {
         defaults.set(0.018, forKey: "realitykitScreenCornerRadius")
         defaults.removeObject(forKey: "realitykitRendererTilt")
         
-        // Reset saved gamma and saturation values
-        defaults.removeObject(forKey: "realitykitGamma")
-        defaults.removeObject(forKey: "realitykitSaturation")
+        // Reset saved PQ exposure values
         defaults.removeObject(forKey: "realitykitPqExposure")
         defaults.removeObject(forKey: "realitykitVolumePqExposure")
         defaults.removeObject(forKey: "realitykitImmersivePqExposure")

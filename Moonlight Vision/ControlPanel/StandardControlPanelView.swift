@@ -552,8 +552,6 @@ struct StandardControlPanelView: View {
     private func saveRealityKitSettings() {
         guard viewModel.streamSettings.rememberStreamSettings else { return }
         let defaults = UserDefaults.standard
-        defaults.set(viewModel.streamSettings.gamma, forKey: "realitykitGamma")
-        defaults.set(viewModel.streamSettings.saturation, forKey: "realitykitSaturation")
         defaults.set(viewModel.streamSettings.pqExposure, forKey: "realitykitPqExposure")
         if let height = height {
             defaults.set(height.wrappedValue, forKey: "realitykitHeight")
