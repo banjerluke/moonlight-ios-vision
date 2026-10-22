@@ -134,6 +134,8 @@
 "screen_corner_radius" = "Screen corner radius";
 "uikit_settings" = "UIKit (Classic) Renderer Settings";
 "window_corner_radius" = "Window Corner Radius";
+"window_padding" = "Window Padding";
+"window_padding_hint" = "Transparent margin around the flat window's stream, so the window's corner resize handles don't take focus from the stream's corners.";
 "corner_radius_clarity_warning" = "This may affect stream clarity";
 "touch_mode" = "Touch Mode";
 "touchpad" = "Touchpad";

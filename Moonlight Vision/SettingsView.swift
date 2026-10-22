@@ -410,6 +410,24 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+
+                    HStack {
+                        Label(viewModel.localized("window_padding"), systemImage: "rectangle.inset.filled")
+                        Spacer()
+                        Text("\(Int(settings.uikitWindowPadding))pt")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: $settings.uikitWindowPadding, in: 0...120, step: 4)
+                        .onChange(of: settings.uikitWindowPadding) { _, _ in
+                            saveTimer?.invalidate()
+                            saveTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
+                                settings.save()
+                            }
+                        }
+                    Text(viewModel.localized("window_padding_hint"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 
                 Section(header: Label(viewModel.localized("general_settings"), systemImage: "gear")) {

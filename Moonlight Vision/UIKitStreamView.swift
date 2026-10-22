@@ -46,6 +46,10 @@ struct UIKitStreamView: View {
                     .id(reloadToken)
                     .onAppear { lastStreamErrorMessage = nil }
                     .clipShape(RoundedRectangle(cornerRadius: CGFloat(viewModel.streamSettings.uikitWindowCornerRadius), style: .continuous))
+                    // Keep the stream's aspect inside a transparent margin: the window's corner resize
+                    // handles otherwise take focus whenever gaze or the pointer reaches a stream corner.
+                    .aspectRatio(CGFloat(configBinding.wrappedValue.width) / CGFloat(configBinding.wrappedValue.height), contentMode: .fit)
+                    .padding(CGFloat(viewModel.streamSettings.uikitWindowPadding))
                     .preferredSurroundingsEffect(
                         // Apply dimming effect when dimPassthrough is enabled
                         viewModel.streamSettings.dimPassthrough ? .systemDark : nil

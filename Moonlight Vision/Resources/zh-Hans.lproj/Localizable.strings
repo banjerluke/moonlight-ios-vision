@@ -135,6 +135,8 @@
 "screen_corner_radius" = "屏幕圆角";
 "uikit_settings" = "UIKit（经典）渲染器设置";
 "window_corner_radius" = "窗口圆角";
+"window_padding" = "窗口边距";
+"window_padding_hint" = "平面窗口画面四周的透明边距，避免窗口角落的缩放手柄抢走画面角落的焦点。";
 "corner_radius_clarity_warning" = "这可能会影响串流清晰度";
 "touch_mode" = "触摸模式";
 "touchpad" = "触摸板";

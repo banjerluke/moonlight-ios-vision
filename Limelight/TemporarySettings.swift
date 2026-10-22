@@ -79,6 +79,9 @@ public class TemporarySettings: NSObject {
     
     // UIKit window corner radius (default: 0, may affect clarity)
     @objc public var uikitWindowCornerRadius: Float = 0.0
+    // Transparent margin around the UIKit stream, so the window's corner resize handles
+    // don't steal gaze/pointer focus from the stream's corners (e.g. the Windows Start button).
+    @objc public var uikitWindowPadding: Float = 48.0
     
     // --- HDR / Color Settings ---
     // HDR correct neutral: boost=1.0, contrast=1.0, saturation=1.0 (passed directly to shader)
@@ -230,6 +233,7 @@ public class TemporarySettings: NSObject {
             self.autoResumeStreamOnReopen = UserDefaults.standard.bool(forKey: "autoResumeStreamOnReopen")
             self.rememberStreamSettings = UserDefaults.standard.object(forKey: "rememberStreamSettings") as? Bool ?? true
             self.uikitWindowCornerRadius = UserDefaults.standard.object(forKey: "uikitWindowCornerRadius") as? Float ?? 0.0
+            self.uikitWindowPadding = UserDefaults.standard.object(forKey: "uikitWindowPadding") as? Float ?? 48.0
             self.spatialAudioMode = UserDefaults.standard.object(forKey: "spatialAudioMode") as? Int ?? SpatialAudioMode.window.rawValue
             self.preferUninterruptedAudio = UserDefaults.standard.object(forKey: "preferUninterruptedAudio") as? Bool ?? true
             #endif
@@ -253,6 +257,7 @@ public class TemporarySettings: NSObject {
         UserDefaults.standard.set(self.fpsMouseCapture, forKey: "fpsMouseCapture")
         UserDefaults.standard.set(self.rememberStreamSettings, forKey: "rememberStreamSettings")
         UserDefaults.standard.set(self.uikitWindowCornerRadius, forKey: "uikitWindowCornerRadius")
+        UserDefaults.standard.set(self.uikitWindowPadding, forKey: "uikitWindowPadding")
         UserDefaults.standard.set(self.realitykitScreenCornerRadius, forKey: "realitykitScreenCornerRadius")
         UserDefaults.standard.set(self.realitykitRendererTilt, forKey: "realitykitRendererTilt")
         UserDefaults.standard.set(self.spatialAudioMode, forKey: "spatialAudioMode")
@@ -372,6 +377,7 @@ public class TemporarySettings: NSObject {
         self.dimPassthrough = true
         self.preferredCodec = PreferredCodec.auto
         self.uikitWindowCornerRadius = 0.0
+        self.uikitWindowPadding = 48.0
         self.spatialAudioMode = SpatialAudioMode.window.rawValue
         self.preferUninterruptedAudio = true
         
@@ -417,6 +423,7 @@ public class TemporarySettings: NSObject {
         
         // Reset UIKit window corner radius
         defaults.set(0.0, forKey: "uikitWindowCornerRadius")
+        defaults.set(48.0, forKey: "uikitWindowPadding")
         
         // Reset spatial audio mode
         defaults.set(SpatialAudioMode.window.rawValue, forKey: "spatialAudioMode")
