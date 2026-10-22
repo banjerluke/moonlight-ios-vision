@@ -118,7 +118,6 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     private lazy var commandQueue: MTLCommandQueue? = mtlDevice.makeCommandQueue()
 
     private var hdrEnabled: Bool
-    private var hdrMetadata: SS_HDR_METADATA = SS_HDR_METADATA()
 
     private var enhancementsProvider: (() -> (Float, Float, Float))? = nil
     private var isVolumeModeProvider: (() -> Bool)? = nil
@@ -314,10 +313,6 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         else {
             commandBuffer.commit()
             return
-        }
-        
-        if hdrEnabled {
-            updateHDRMetadata()
         }
 
         var isBiPlanar = false
@@ -1213,7 +1208,6 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         }
 
         if metadataChanged {
-            updateHDRMetadata()
             LiRequestIdrFrame()
         }
     }
@@ -1237,12 +1231,6 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         pipelineDescriptor.maxVertexAmplificationCount = 1
 
         return try? mtlDevice.makeRenderPipelineState(descriptor: pipelineDescriptor)
-    }
-
-    private func updateHDRMetadata() {
-        if !LiGetHdrMetadata(&hdrMetadata) {
-            print("Failed to fetch HDR metadata from Moonlight")
-        }
     }
 }
 
