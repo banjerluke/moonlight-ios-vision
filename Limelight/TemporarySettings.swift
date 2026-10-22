@@ -274,9 +274,15 @@ public class TemporarySettings: NSObject {
             self.macVirtualDisplayExperimental = UserDefaults.standard.bool(forKey: .macVirtualDisplayExperimental)
             
             // --- HDR / COLOR LOADING ---
-            self.brightness = settings.brightness?.floatValue ?? 1.0
-            self.gamma = settings.gamma?.floatValue ?? 1.0
-            self.saturation = settings.saturation?.floatValue ?? 1.0
+            let loadedBrightness = settings.brightness?.floatValue ?? 1.0
+            let loadedGamma = settings.gamma?.floatValue ?? 1.0
+            let loadedSaturation = settings.saturation?.floatValue ?? 1.0
+            // The Core Data model defaults these to 0.0, so a record that never saved them loads as
+            // all zeros (a blank HDR picture) instead of nil. Treat that as unset.
+            let colorNeverSaved = loadedBrightness == 0 && loadedGamma == 0 && loadedSaturation == 0
+            self.brightness = colorNeverSaved ? 1.0 : loadedBrightness
+            self.gamma = colorNeverSaved ? 1.0 : loadedGamma
+            self.saturation = colorNeverSaved ? 1.0 : loadedSaturation
             self.pqExposure = 1.0
             
             if let storedLang = UserDefaults.standard.object(forKey: .appLanguagePreference) as? Int {
