@@ -228,6 +228,7 @@
 "gamepad_home" = "Gamepad Home";
 "stats_overlay" = "Stats Overlay";
 "screen_tilt" = "Screen Tilt";
+"text_anti_shimmer" = "Text Anti-Shimmer";
 "hide_panel" = "Hide Panel";
 "semi_short" = "Semi";
 "full_short" = "Full";

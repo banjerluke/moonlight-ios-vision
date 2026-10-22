@@ -21,6 +21,7 @@ def Xform "Root"
                 }
             }
         )
+        float inputs:minLod = 0
         token outputs:mtlx:surface.connect = </Root/SBSMaterial/UnlitPreviewSurface.outputs:out>
         token outputs:realitykit:vertex
         float2 ui:nodegraph:realitykit:subgraphOutputs:pos = (570.13995, 229.80997)
@@ -70,6 +71,7 @@ def Xform "Root"
             asset inputs:file.connect = </Root/SBSMaterial.inputs:texture>
             float2 inputs:texcoord.connect = </Root/SBSMaterial/LeftUV.outputs:out>
             int inputs:max_anisotropy = 16
+            float inputs:dynamic_min_lod_clamp.connect = </Root/SBSMaterial.inputs:minLod>
             bool inputs:no_flip_v = 1
             color3f outputs:out
             float2 ui:nodegraph:node:pos = (-405.69922, 10.6875)
@@ -83,6 +85,7 @@ def Xform "Root"
             asset inputs:file.connect = </Root/SBSMaterial.inputs:texture>
             float2 inputs:texcoord.connect = </Root/SBSMaterial/RightUV.outputs:out>
             int inputs:max_anisotropy = 16
+            float inputs:dynamic_min_lod_clamp.connect = </Root/SBSMaterial.inputs:minLod>
             bool inputs:no_flip_v = 1
             color3f outputs:out
             float2 ui:nodegraph:node:pos = (-409.65234, 275.46094)
