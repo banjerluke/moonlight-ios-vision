@@ -2407,16 +2407,11 @@ struct _RealityKitStreamView: View {
             // Set controller support reference for rumble forwarding
             self.connectionCallbacks.controllerSupport = self.controllerSupport
             
-            // Capture texture locally for thread-safe background access
-            let localTexture = self.texture
-            
             self.streamMan = StreamManager(
                 config: self.streamConfig,
                 rendererProvider: {
                     DrawableVideoDecoder(
-                        texture: localTexture,
                         callbacks: self.connectionCallbacks,
-                        aspectRatio: self.screenAspect,
                         useFramePacing: self.streamConfig.useFramePacing,
                         enableHDR: self.viewModel.streamSettings.enableHdr,
                         hdrSettingsProvider: {

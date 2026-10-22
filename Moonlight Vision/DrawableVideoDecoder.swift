@@ -69,7 +69,6 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     // MARK: - Properties
 
     private var callbacks: ConnectionCallbacks
-    private var streamAspectRatio: Float
 
     let callbackToRender: @MainActor (TextureResource.DrawableQueue, TextureResource.DrawableQueue?, (Int, Int)?) -> Void
     let debugInfoCallback: (@MainActor (String) -> Void)?
@@ -100,9 +99,6 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     /// Display link for pacing decode submissions
     private var displayLink: CADisplayLink?
 
-    private let texture: TextureResource
-    private var outTexture: MTLTexture?
-    private var region = MTLRegionMake2D(0, 0, 1000, 1000)
     var textureCache: CVMetalTextureCache?
     var drawableQueue: TextureResource.DrawableQueue?
     var ambilightQueue: TextureResource.DrawableQueue?
@@ -121,8 +117,6 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
 
     private lazy var commandQueue: MTLCommandQueue? = mtlDevice.makeCommandQueue()
 
-    private var imagePlaneVertexBuffer: MTLBuffer?
-
     private var hdrEnabled: Bool
     private var hdrMetadata: SS_HDR_METADATA = SS_HDR_METADATA()
 
@@ -131,7 +125,6 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     private var enableAmbilightProvider: (() -> Bool)? = nil
 
     private var copyPipelineState: MTLRenderPipelineState?
-    private var copyPipelineFormat: MTLPixelFormat?
     private var copyPipelineStateYUV: MTLRenderPipelineState?
     private var lastCopyFragment: String?
     private var ambilightPipelineState: MTLRenderPipelineState?
@@ -143,9 +136,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     // MARK: - Initialization
 
     init(
-        texture: TextureResource,
         callbacks: ConnectionCallbacks,
-        aspectRatio: Float,
         useFramePacing: Bool,
         enableHDR: Bool = false,
         hdrSettingsProvider: (() -> HDRParams)? = nil,
@@ -161,9 +152,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
             kCVPixelFormatType_64RGBAHalf :
             kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
 
-        self.texture = texture
         self.callbacks = callbacks
-        streamAspectRatio = aspectRatio
         framePacing = useFramePacing
         self.hdrEnabled = enableHDR
         self.hdrSettingsProvider = hdrSettingsProvider
@@ -624,8 +613,6 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                 }
             }()
 
-            region = MTLRegionMake2D(0, 0, videoWidth, videoHeight)
-
             self.callbackToRender(self.drawableQueue!, self.ambilightQueue, (videoWidth, videoHeight))
         }
     }
@@ -706,7 +693,6 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         }
         textureCache = nil
         copyPipelineState = nil
-        copyPipelineFormat = nil
         copyPipelineStateYUV = nil
         lastCopyFragment = nil
         
@@ -1253,64 +1239,15 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         return try? mtlDevice.makeRenderPipelineState(descriptor: pipelineDescriptor)
     }
 
-    private func convertBigEndianUInt16ToFloat(_ value: UInt16) -> Float {
-        let hostValue = CFSwapInt16BigToHost(value)
-        return Float(hostValue)
-    }
-
-    // MARK: - METAL
-
-    private let planeVertexData: [Float] = [
-        -1, -1, 0, 1,
-        1, -1, 1, 1,
-        -1, 1, 0, 0,
-        1, 1, 1, 0,
-    ]
-
     private func updateHDRMetadata() {
         if !LiGetHdrMetadata(&hdrMetadata) {
             print("Failed to fetch HDR metadata from Moonlight")
         }
     }
-    
-    private func parseMasteringDisplayColorVolume(_ data: Data) {
-        guard data.count == 24 else {
-            print("Invalid metadata length: \(data.count)")
-            return
-        }
-
-        let displayPrimariesX = [
-            Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 0, as: UInt16.self) })) / 50000.0,
-            Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt16.self) })) / 50000.0,
-            Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 8, as: UInt16.self) })) / 50000.0
-        ]
-        
-        let displayPrimariesY = [
-            Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 2, as: UInt16.self) })) / 50000.0,
-            Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 6, as: UInt16.self) })) / 50000.0,
-            Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 10, as: UInt16.self) })) / 50000.0
-        ]
-        
-        let whitePointX = Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 12, as: UInt16.self) })) / 50000.0
-        let whitePointY = Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 14, as: UInt16.self) })) / 50000.0
-        
-        let maxDisplayLuminance = Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 16, as: UInt16.self) }))
-        let minDisplayLuminance = Float(CFSwapInt16BigToHost(data.withUnsafeBytes { $0.load(fromByteOffset: 18, as: UInt16.self) })) / 10000.0
-
-        print("\nHDR Display Metadata:")
-        print("Display Primaries (x,y):")
-        print("Red:    (\(displayPrimariesX[0]), \(displayPrimariesY[0]))")
-        print("Green: (\(displayPrimariesX[1]), \(displayPrimariesY[1]))")
-        print("Blue:  (\(displayPrimariesX[2]), \(displayPrimariesY[2]))")
-        print("White Point: (\(whitePointX), \(whitePointY))")
-        print("Max Display Luminance: \(maxDisplayLuminance) nits")
-        print("Min Display Luminance: \(minDisplayLuminance) nits")
-    }
 }
 
 // MARK: - Constants Port
 
-private let NALU_START_PREFIX_SIZE: Int = 3
 private let NAL_LENGTH_PREFIX_SIZE: Int = 4
 
 let VIDEO_FORMAT_H264: Int32 = 0x0001
