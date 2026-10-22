@@ -3570,8 +3570,8 @@ struct _RealityKitStreamView: View {
             if let p = defaults.object(forKey: .realitykitImmersivePqExposure) as? Float { viewModel.streamSettings.pqExposure = p }
         }
         // Position/scale: only restore when rememberStreamSettings and valid saved data exists
-        let defaultImmersivePosition = SIMD3<Float>(0, 1.0, -1.5)
-        let defaultImmersiveScale: Float = 0.8
+        let defaultImmersivePosition = StreamControlState.defaultImmersivePosition
+        let defaultImmersiveScale = StreamControlState.defaultImmersiveScale
         if viewModel.streamSettings.rememberStreamSettings {
             if let savedPosX = defaults.object(forKey: .realitykitImmersivePosX) as? Float,
                let savedPosY = defaults.object(forKey: .realitykitImmersivePosY) as? Float,
