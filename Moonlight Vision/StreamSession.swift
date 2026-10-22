@@ -51,9 +51,10 @@ final class StreamSession: ObservableObject {
         let controllerDelegate: ControllerSupportDelegate
         /// Wait before each connection attempt, so the view and the host can settle.
         let startDelay: TimeInterval
-        /// Called on main before each attempt with that attempt's `ControllerSupport`. StreamManager
-        /// calls the returned factory (on main) to create the renderer.
-        let prepareAttempt: (ControllerSupport) -> () -> AnyVideoDecoderRenderer
+        /// Called on main before each attempt with that attempt's `ControllerSupport` and callbacks.
+        /// StreamManager calls the returned factory (on main) to create the renderer, which must be
+        /// given those callbacks so the session sees the first frame.
+        let prepareAttempt: (ControllerSupport, ConnectionCallbacks) -> () -> AnyVideoDecoderRenderer
     }
 
     static let maxReconnectAttempts = 3
@@ -138,6 +139,10 @@ final class StreamSession: ObservableObject {
         scheduleAttempt(after: port.startDelay)
     }
 
+    func statsOverlayText() -> String? {
+        manager?.getStatsOverlayText()
+    }
+
     // MARK: - Attempts
 
     private func scheduleAttempt(after delay: TimeInterval) {
@@ -165,8 +170,8 @@ final class StreamSession: ObservableObject {
         }
         let gen = generation
         controllerSupport = support
-        let makeRenderer = port.prepareAttempt(support)
         let callbacks = AttemptCallbacks(session: self, generation: gen, port: port.callbacks, controllerSupport: support)
+        let makeRenderer = port.prepareAttempt(support, callbacks)
         guard let manager = StreamManager(
             config: config,
             rendererProvider: { [weak self] in

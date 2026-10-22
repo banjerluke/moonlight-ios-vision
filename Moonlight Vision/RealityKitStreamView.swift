@@ -134,18 +134,9 @@ struct _RealityKitStreamView: View {
     @State private var volumeYLimits: ClosedRange<Float> = -0.5...0.5
     @State private var volumeZLimits: ClosedRange<Float> = -0.5...0.5
     
-    @State private var streamMan: StreamManager?
-    @State private var streamOpQueue = OperationQueue()
-    @State private var controllerSupport: ControllerSupport?
+    @StateObject private var session: StreamSession
     @StateObject var connectionCallbacks: ObservableConnectionManager = .init()
     @State private var lastStreamErrorMessage: String? = nil
-    
-    /// Auto-reconnect: attempt count (0 = fresh, 1..=max = retrying). Reset on first frame.
-    @State private var reconnectAttemptCount: Int = 0
-    @State private var isReconnecting: Bool = false
-    @State private var isPerformingReconnectTeardown: Bool = false  // Ignore ConnectionTerminatedForRetry during this
-    private let maxReconnectAttempts = 3
-    private let reconnectDelaySeconds: TimeInterval = 2.5
     
     // Immersive Environment
     @State private var immersiveEnvironment = ImmersiveEnvironment()
@@ -206,10 +197,7 @@ struct _RealityKitStreamView: View {
     
     @State private var hideTimer: Timer?
     @State private var controlsEntity: Entity?
-    @State private var shouldClose = false
     @FocusState private var isInputFocused: Bool
-    @State private var hasPerformedTeardown = false
-    @State private var needsResume = false
     // spatialAudioMode is now in viewModel.streamSettings.spatialAudioMode
     @State private var statsOverlayText: String = ""
     @State private var statsTimer: Timer?
@@ -231,8 +219,6 @@ struct _RealityKitStreamView: View {
     @State private var gazeController = GazeInputController()
 
     private let headStorage = HeadPositionStorage()
-    
-    @State private var renderGateOpen: Bool = true
     
     private let attachmentLayoutAspectBox = MutableBox<Float>(-1)
     
@@ -278,10 +264,15 @@ struct _RealityKitStreamView: View {
         return abs(ratio - (32.0 / 9.0)) < 0.01
     }
 
-    @State private var firstFrameReceived = false
-    @State private var idrWatchdogTimer1: Timer?
-    @State private var idrWatchdogTimer2: Timer?
     @State private var postFirstFrameRebindTimer: Timer?
+
+    private var controllerSupport: ControllerSupport? { session.controllerSupport }
+    private var firstFrameReceived: Bool { session.phase == .running }
+    private var reconnectAttempt: Int? {
+        if case .reconnecting(let attempt) = session.phase { return attempt }
+        return nil
+    }
+    private var isReconnecting: Bool { reconnectAttempt != nil }
     
     var allowedScaleMax: Float { 8.0 }
     var cornerRadiusFraction: Float { viewModel.streamSettings.realitykitScreenCornerRadius }
@@ -344,29 +335,19 @@ struct _RealityKitStreamView: View {
             .onAppear(perform: setupScene)
             .onDisappear(perform: teardownScene)
             .onChange(of: viewModel.shouldCloseStream) { _, shouldClose in
-                if shouldClose && !hasPerformedTeardown {
+                if shouldClose && session.isLive {
                     triggerCloseSequence()
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("RequestStreamCloseFromMainMenu"))) { _ in
-                guard !hasPerformedTeardown else { return }
+                guard session.isLive else { return }
                 triggerCloseSequence()
             }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("RealityKitStreamErrorNotification"))) { notification in
-                if let msg = notification.userInfo?["message"] as? String {
-                    lastStreamErrorMessage = msg
-                }
+            .onChange(of: session.phase) { _, newPhase in
+                handleSessionPhase(newPhase)
             }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ConnectionTerminatedForRetry"))) { notification in
-                DispatchQueue.main.async { handleConnectionTerminatedForRetry(notification: notification) }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("RKStreamFirstFrameShown"))) { _ in
-                if reconnectAttemptCount > 0 {
-                    reconnectAttemptCount = 0
-                    isReconnecting = false
-                    connectionCallbacks.isReconnectingForRetry = false
-                    print("[StreamView] Reconnect succeeded, reset attempt count")
-                }
+            .onChange(of: session.controllerSupport) { _, support in
+                controlState.controllerSupport = support
             }
             .onChange(of: scenePhase) { oldValue, newValue in
                 if newValue == .background {
@@ -375,20 +356,9 @@ struct _RealityKitStreamView: View {
                         // otherwise stays resident across many crown in/out cycles and virtual-scene toggles.
                         releaseImmersiveHeavyCachesForBackground()
                     }
-                    if viewModel.activelyStreaming, streamMan != nil {
-                        print("Suspending stream due to background")
-                        needsResume = true
-                        renderGateOpen = false // CRITICAL: Stop rendering before stopping stream to prevent EXC_BAD_ACCESS
-                        let sm = streamMan
-                        streamMan = nil
-                        controllerSupport?.cleanup()
-                        controllerSupport = nil
-                        
-                        sm?.stopStream(completion: {
-                            DispatchQueue.main.async {
-                                AudioHelpers.resetAudioSession()
-                            }
-                        })
+                    if viewModel.activelyStreaming {
+                        // The session closes the render gate, stops the stream and resets audio once it has stopped.
+                        session.suspend()
                     }
                 } else if newValue == .active {
                     if isImmersive,
@@ -397,13 +367,9 @@ struct _RealityKitStreamView: View {
                        !immersiveEnvironment.isLoading {
                         immersiveEnvironment.loadEnvironment()
                     }
-                    if needsResume {
-                        print("Resuming stream from background")
-                        needsResume = false
-                        self.renderGateOpen = true
-                        controllerSupport = ControllerSupport(config: streamConfig, delegate: DummyControllerDelegate())
-                        connectionCallbacks.controllerSupport = controllerSupport
-                        startStreamIfNeeded()
+                    if session.phase == .suspended {
+                        // Reconnects once the background stop has really finished.
+                        session.resume()
                         
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                             fixAudioForCurrentMode()
@@ -412,15 +378,6 @@ struct _RealityKitStreamView: View {
                             self.refreshAfterResume()
                         }
                     } else if viewModel.activelyStreaming, !isReconnecting {
-                        // Health check: If stream should be running but isn't, restart it
-                        if streamMan == nil {
-                            print("[StreamView] Stream died while inactive - restarting")
-                            self.renderGateOpen = true
-                            controllerSupport = ControllerSupport(config: streamConfig, delegate: DummyControllerDelegate())
-                            connectionCallbacks.controllerSupport = controllerSupport
-                            startStreamIfNeeded()
-                        }
-                        
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                             fixAudioForCurrentMode()
                         }
@@ -496,7 +453,6 @@ struct _RealityKitStreamView: View {
                 handleStatsOverlay(oldValue: oldValue, newValue: newValue)
             }
             .onChange(of: viewModel.activelyStreaming) { oldValue, newValue in 
-                self.renderGateOpen = true
                 handleActiveStreaming(oldValue: oldValue, newValue: newValue)
             }
             .onChange(of: videoMode) { _, _ in updateScreenMaterial() }
@@ -659,7 +615,7 @@ struct _RealityKitStreamView: View {
             Text(viewModel.localized("reconnecting"))
                 .font(.headline)
                 .foregroundStyle(.white)
-            Text(String(format: viewModel.localized("reconnect_attempt"), reconnectAttemptCount, maxReconnectAttempts))
+            Text(String(format: viewModel.localized("reconnect_attempt"), reconnectAttempt ?? 0, StreamSession.maxReconnectAttempts))
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.85))
         }
@@ -844,8 +800,6 @@ struct _RealityKitStreamView: View {
                             },
                             closeAction: {
                                 viewModel.savedStreamConfigForResume = nil
-                                needsResume = false
-                                hasPerformedTeardown = false
                                 viewModel.streamState = .stopping
                                 triggerCloseSequence()
                             },
@@ -917,7 +871,7 @@ struct _RealityKitStreamView: View {
                         Text(viewModel.localized("reconnecting"))
                             .font(.subheadline)
                             .foregroundStyle(.white)
-                        Text(String(format: viewModel.localized("reconnect_attempt"), reconnectAttemptCount, maxReconnectAttempts))
+                        Text(String(format: viewModel.localized("reconnect_attempt"), reconnectAttempt ?? 0, StreamSession.maxReconnectAttempts))
                             .font(.caption)
                             .foregroundStyle(.white.opacity(0.85))
                     }
@@ -968,14 +922,11 @@ struct _RealityKitStreamView: View {
         }
 
         // Non-state prep: safe to do synchronously
-        print("[StreamView] Re-initializing ControllerSupport with slotOffset: \(streamConfig.controllerSlotOffset)")
-        self.controllerSupport = ControllerSupport(config: streamConfig, delegate: DummyControllerDelegate())
-        connectionCallbacks.controllerSupport = self.controllerSupport
         connectionCallbacks.showAlert = false
         gazeController.streamConfig = streamConfig
 
-        // Kick off stream (internally defers heavy work with asyncAfter)
-        startStreamIfNeeded()
+        // Kick off the stream (the session waits its start delay before connecting)
+        startSession()
 
         // Dismiss windows synchronously (no @State involved)
         dismissWindow(id: "mainView")
@@ -984,8 +935,6 @@ struct _RealityKitStreamView: View {
         // Defer all @State mutations to next runloop to avoid
         // "Modifying state during view update" — onAppear fires mid-update-pass.
         DispatchQueue.main.async { [self] in
-            hasPerformedTeardown = false
-            renderGateOpen = true
             lastStreamErrorMessage = nil
 
             isMenuOpen = false
@@ -1040,8 +989,6 @@ struct _RealityKitStreamView: View {
             hideTimer?.invalidate()
             hideTimer = nil
             hideControls = false
-
-            openedMainAfterDisconnect = false
 
             applyDefaultDisplayParams()
 
@@ -1107,10 +1054,8 @@ struct _RealityKitStreamView: View {
         }
         controlState.closeAction = { [self] in
             viewModel.savedStreamConfigForResume = nil
-            needsResume = false
-            hasPerformedTeardown = false
             viewModel.streamState = .stopping
-            performCompleteTeardown()
+            performCompleteTeardown(.user)
         }
         
         controlState.toggleKeyboardAction = { [self] in
@@ -1213,9 +1158,7 @@ struct _RealityKitStreamView: View {
         statsTimer = nil
         stopReactiveLerp()
         
-        if !hasPerformedTeardown {
-            performCompleteTeardown()
-        }
+        performCompleteTeardown(.windowClosed)
         saveCurrentTransform()
     }
     
@@ -1230,19 +1173,11 @@ struct _RealityKitStreamView: View {
             showMenuPanel = false
         }
         if newValue {
-            ensureStreamStartedIfNeeded()
+            startSession()
             dismissWindow(id: "mainView")
         }
     }
 
-    private func handleStreamState(oldValue: StreamLifecycleState, newValue: StreamLifecycleState) {
-        if newValue == .starting {
-            ensureStreamStartedIfNeeded()
-        } else if(newValue == .idle) {
-            self.shouldClose = false
-        }
-    }
-    
     // MARK: - Gestures
     
     /// Unified drag gesture to prevent conflict between Screen Move and Gaze Control
@@ -2181,10 +2116,6 @@ struct _RealityKitStreamView: View {
 
     // MARK: - Stream Management
 
-    private func ensureStreamStartedIfNeeded() {
-        startStreamIfNeeded()
-    }
-    
     private func updateVolumeWindowLimits(volSize: SIMD3<Float>, scaleFactor: Float, curveDepth: Float) {
         let screenHalfHeight = (CURVED_MAX_WIDTH_METERS * screenAspect * scaleFactor) / 2
         let volHalfHeight = volSize.y / 2
@@ -2306,116 +2237,124 @@ struct _RealityKitStreamView: View {
         }
     }
     
-    private func startStreamIfNeeded() {
-        guard streamMan == nil else {
-            print("[StreamView] StreamManager already exists, skipping duplicate creation")
-            needsResume = false
-            return
-        }
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            guard !self.hasPerformedTeardown, self.viewModel.activelyStreaming, self.streamMan == nil else {
-                print("[StreamView] Aborting stream start - Teardown: \(self.hasPerformedTeardown), Streaming: \(self.viewModel.activelyStreaming), Exists: \(self.streamMan != nil)")
-                return
-            }
-            
-            self.renderGateOpen = true
-            self.firstFrameReceived = false
-            self.idrWatchdogTimer1?.invalidate(); self.idrWatchdogTimer1 = nil
-            self.idrWatchdogTimer2?.invalidate(); self.idrWatchdogTimer2 = nil
-            self.postFirstFrameRebindTimer?.invalidate(); self.postFirstFrameRebindTimer = nil
-            self.idrWatchdogTimer1 = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
-                if !self.firstFrameReceived { LiRequestIdrFrame() }
-            }
-            self.idrWatchdogTimer2 = Timer.scheduledTimer(withTimeInterval: 0.9, repeats: false) { _ in
-                if !self.firstFrameReceived { LiRequestIdrFrame() }
-            }
-            
-            self.recreateStreamTexture()
-            
-            // Set controller support reference for rumble forwarding
-            self.connectionCallbacks.controllerSupport = self.controllerSupport
-            
-            // The decoder reads these per frame on the VT thread, so capture the thread-safe boxes.
-            let hdrSettings = self.safeHDRSettings
-            let ambilightEnabled = self.safeAmbilightEnabled
-            ambilightEnabled.value = self.viewModel.streamSettings.reactiveLightingEnabled
+    private func startSession() {
+        session.start(port: StreamSession.Port(
+            callbacks: connectionCallbacks,
+            controllerDelegate: DummyControllerDelegate(),
+            startDelay: 1.5,
+            prepareAttempt: { _, callbacks in prepareStreamAttempt(callbacks: callbacks) }
+        ))
+    }
 
-            self.streamMan = StreamManager(
-                config: self.streamConfig,
-                rendererProvider: {
-                    DrawableVideoDecoder(
-                        callbacks: self.connectionCallbacks,
-                        useFramePacing: self.streamConfig.useFramePacing,
-                        enableHDR: self.viewModel.streamSettings.enableHdr,
-                        hdrSettingsProvider: {
-                            hdrSettings.value
-                        },
-                        enhancementsProvider: {
-                            (1.0, 1.0, 0.0)
-                        },
-                        isVolumeModeProvider: {
-                            !self.isImmersive
-                        },
-                        enableAmbilightProvider: {
-                            ambilightEnabled.value
-                        },
-                        callbackToRender: { textureQueue, ambilightQueue, correctedResolution in
-                            guard self.renderGateOpen else { return }
+    /// Per-attempt view setup. Returns the renderer factory for the session's StreamManager.
+    private func prepareStreamAttempt(callbacks: ConnectionCallbacks) -> () -> AnyVideoDecoderRenderer {
+        postFirstFrameRebindTimer?.invalidate(); postFirstFrameRebindTimer = nil
+        // Allow the next connection's first frame to re-arm the RKStreamFirstFrameShown
+        // notification. Without this reset the idempotency guard in videoContentShown()
+        // would silently swallow the reconnect signal.
+        connectionCallbacks.videoShown = false
+        recreateStreamTexture()
 
-                            DispatchQueue.main.async {
-                                if let correctedResolution { 
-                                    self.correctedResolution = correctedResolution 
+        // The decoder reads these per frame on the VT thread, so capture the thread-safe boxes.
+        let hdrSettings = safeHDRSettings
+        let ambilightEnabled = safeAmbilightEnabled
+        ambilightEnabled.value = viewModel.streamSettings.reactiveLightingEnabled
+        let useFramePacing = streamConfig.useFramePacing
+        let enableHDR = viewModel.streamSettings.enableHdr
+        let isVolumeMode = !isImmersive
+
+        return {
+            DrawableVideoDecoder(
+                callbacks: callbacks,
+                useFramePacing: useFramePacing,
+                enableHDR: enableHDR,
+                hdrSettingsProvider: {
+                    hdrSettings.value
+                },
+                enhancementsProvider: {
+                    (1.0, 1.0, 0.0)
+                },
+                isVolumeModeProvider: {
+                    isVolumeMode
+                },
+                enableAmbilightProvider: {
+                    ambilightEnabled.value
+                },
+                callbackToRender: { textureQueue, ambilightQueue, correctedResolution in
+                    DispatchQueue.main.async {
+                        if let correctedResolution { 
+                            self.correctedResolution = correctedResolution 
+                        }
+                        self.texture.replace(withDrawables: textureQueue)
+                        
+                        if let ambilightQueue {
+                            if self.ambilightTexture == nil {
+                                do {
+                                    let targetMipLevel = 6
+                                    let ambWidth = max(1, Int(self.streamConfig.width) >> targetMipLevel)
+                                    let ambHeight = max(1, Int(self.streamConfig.height) >> targetMipLevel)
+                                    let bytesPerPixel = self.viewModel.streamSettings.enableHdr ? 8 : 4
+                                    self.ambilightTexture = try TextureResource(
+                                        dimensions: .dimensions(width: ambWidth, height: ambHeight),
+                                        format: .raw(pixelFormat: self.viewModel.streamSettings.enableHdr ? .rgba16Float : .bgra8Unorm_srgb),
+                                        contents: .init(mipmapLevels: [.mip(data: Data(count: bytesPerPixel * ambWidth * ambHeight), bytesPerRow: bytesPerPixel * ambWidth)])
+                                    )
+                                    self.ambilightTexture?.replace(withDrawables: ambilightQueue)
+                                    self.rebindScreenMaterial()
+                                } catch {
+                                    print("Failed to init ambilightTexture: \(error)")
                                 }
-                                self.texture.replace(withDrawables: textureQueue)
-                                
-                                if let ambilightQueue {
-                                    if self.ambilightTexture == nil {
-                                        do {
-                                            let targetMipLevel = 6
-                                            let ambWidth = max(1, Int(self.streamConfig.width) >> targetMipLevel)
-                                            let ambHeight = max(1, Int(self.streamConfig.height) >> targetMipLevel)
-                                            let bytesPerPixel = self.viewModel.streamSettings.enableHdr ? 8 : 4
-                                            self.ambilightTexture = try TextureResource(
-                                                dimensions: .dimensions(width: ambWidth, height: ambHeight),
-                                                format: .raw(pixelFormat: self.viewModel.streamSettings.enableHdr ? .rgba16Float : .bgra8Unorm_srgb),
-                                                contents: .init(mipmapLevels: [.mip(data: Data(count: bytesPerPixel * ambWidth * ambHeight), bytesPerRow: bytesPerPixel * ambWidth)])
-                                            )
-                                            self.ambilightTexture?.replace(withDrawables: ambilightQueue)
-                                            self.rebindScreenMaterial()
-                                        } catch {
-                                            print("Failed to init ambilightTexture: \(error)")
-                                        }
-                                    } else {
-                                        self.ambilightTexture?.replace(withDrawables: ambilightQueue)
-                                    }
-                                }
-                                
-                                // First Frame Logic
-                                if !self.firstFrameReceived {
-                                    self.firstFrameReceived = true
-                                    self.idrWatchdogTimer1?.invalidate(); self.idrWatchdogTimer1 = nil
-                                    self.idrWatchdogTimer2?.invalidate(); self.idrWatchdogTimer2 = nil
-                                    
-                                    self.postFirstFrameRebindTimer?.invalidate()
-                                    self.postFirstFrameRebindTimer = Timer.scheduledTimer(withTimeInterval: 0.18, repeats: false) { _ in
-                                        self.rebindScreenMaterial()
-                                    }
-                                    
-                                    self.controllerSupport?.connectionEstablished()
-                                    self.startHideTimer()
-                                }
+                            } else {
+                                self.ambilightTexture?.replace(withDrawables: ambilightQueue)
                             }
                         }
-                    )
-                },
-                connectionCallbacks: self.connectionCallbacks
+                    }
+                }
             )
-            if let streamMan = self.streamMan {
-                self.streamOpQueue.addOperation(streamMan)
-            }
-            
         }
+    }
+
+    private func handleSessionPhase(_ phase: StreamSession.Phase) {
+        switch phase {
+        case .running:
+            postFirstFrameRebindTimer?.invalidate()
+            postFirstFrameRebindTimer = Timer.scheduledTimer(withTimeInterval: 0.18, repeats: false) { _ in
+                self.rebindScreenMaterial()
+            }
+            controllerSupport?.connectionEstablished()
+            startHideTimer()
+        case .ended(let end):
+            postFirstFrameRebindTimer?.invalidate(); postFirstFrameRebindTimer = nil
+            handleSessionEnded(end)
+        default:
+            break
+        }
+    }
+
+    private func handleSessionEnded(_ end: StreamSession.End) {
+        switch end {
+        case .stopped:
+            print("[StreamView] 🔴 TEARDOWN COMPLETE")
+            NotificationCenter.default.post(name: .rkStreamDidTeardown, object: nil)
+        case .startFailed(let message):
+            showStreamError(message)
+            NotificationCenter.default.post(name: Notification.Name("StreamStartFailed"), object: nil)
+            triggerCloseSequence()
+        case .connectionLost(let message):
+            showStreamError(message)
+            if isImmersive {
+                // Keep activelyStreaming so the space stays on mainContent with the error overlay.
+                viewModel.streamState = .stopping
+            } else {
+                NotificationCenter.default.post(name: Notification.Name("RealityKitRetriesExhausted"), object: nil)
+            }
+        }
+    }
+
+    private func showStreamError(_ message: String) {
+        lastStreamErrorMessage = message
+        connectionCallbacks.errorMessage = message
+        connectionCallbacks.showAlert = true
     }
     
     private func recreateStreamTexture() {
@@ -2436,10 +2375,8 @@ struct _RealityKitStreamView: View {
         }
     }
     
-    @State private var openedMainAfterDisconnect = false
-    
-    private func triggerCloseSequence() {
-        performCompleteTeardown()
+    private func triggerCloseSequence(_ reason: StreamSession.StopReason = .user) {
+        performCompleteTeardown(reason)
         viewModel.shouldCloseStream = false
 
         if isImmersive {
@@ -2463,145 +2400,12 @@ struct _RealityKitStreamView: View {
         }
     }
     
-    private func handleConnectionTerminatedForRetry(notification: Notification) {
-        guard !hasPerformedTeardown, viewModel.activelyStreaming else { return }
-        guard !isPerformingReconnectTeardown else { return }  // Ignore spurious from our own stopStream
-        let msg = (notification.userInfo?["message"] as? String) ?? viewModel.localized("unknown_error")
-        
-        if reconnectAttemptCount < maxReconnectAttempts {
-            let configToUse = self.streamConfig
-            Task {
-                var isOnline = false
-                if let hostAddress = configToUse.host,
-                   let host = viewModel.hosts.first(where: { $0.activeAddress == hostAddress || $0.address == hostAddress || $0.localAddress == hostAddress || $0.externalAddress == hostAddress }) {
-                    let httpManager = HttpManager(host: host)
-                    let serverInfoResponse = ServerInfoResponse()
-                    let request = HttpRequest(
-                        for: serverInfoResponse,
-                        with: httpManager?.newServerInfoRequest(false),
-                        fallbackError: 401,
-                        fallbackRequest: httpManager?.newHttpServerInfoRequest()
-                    )
-                    
-                    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                        DispatchQueue.global(qos: .userInitiated).async {
-                            httpManager?.executeRequestSynchronously(request)
-                            continuation.resume()
-                        }
-                    }
-                    isOnline = serverInfoResponse.isStatusOk()
-                } else {
-                    isOnline = true // Fallback to normal retry if host missing
-                }
-                
-                await MainActor.run {
-                    guard !self.hasPerformedTeardown, self.viewModel.activelyStreaming else { return }
-                    
-                    if isOnline {
-                        self.reconnectAttemptCount += 1
-                        self.isReconnecting = true
-                        self.connectionCallbacks.isReconnectingForRetry = true
-                        self.isPerformingReconnectTeardown = true
-                        print("[StreamView] Connection lost, auto-reconnect attempt \(self.reconnectAttemptCount)/\(self.maxReconnectAttempts)")
-                        self.performReconnectTeardown {
-                            self.isPerformingReconnectTeardown = false
-                            DispatchQueue.main.asyncAfter(deadline: .now() + self.reconnectDelaySeconds) {
-                                guard !self.hasPerformedTeardown, self.viewModel.activelyStreaming else {
-                                    self.isReconnecting = false
-                                    self.connectionCallbacks.isReconnectingForRetry = false
-                                    return
-                                }
-                                self.renderGateOpen = true
-                                self.controllerSupport = ControllerSupport(config: self.streamConfig, delegate: DummyControllerDelegate())
-                                self.connectionCallbacks.controllerSupport = self.controllerSupport
-                                self.startStreamIfNeeded()
-                            }
-                        }
-                    } else {
-                        print("[StreamView] Host offline, aborting reconnect attempts")
-                        self.isReconnecting = false
-                        self.isPerformingReconnectTeardown = false
-                        self.connectionCallbacks.isReconnectingForRetry = false
-                        self.reconnectAttemptCount = 0
-                        self.lastStreamErrorMessage = msg
-                        self.connectionCallbacks.showAlert = true
-                        self.connectionCallbacks.errorMessage = msg
-                        if self.isImmersive {
-                            self.viewModel.streamState = .stopping
-                        }
-                        self.performReconnectTeardown {
-                            NotificationCenter.default.post(name: Notification.Name("RealityKitStreamErrorNotification"), object: nil, userInfo: ["message": msg])
-                            if !self.isImmersive {
-                                NotificationCenter.default.post(name: Notification.Name("RealityKitRetriesExhausted"), object: nil)
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            print("[StreamView] Reconnect attempts exhausted, showing error overlay")
-            isReconnecting = false
-            isPerformingReconnectTeardown = false
-            connectionCallbacks.isReconnectingForRetry = false
-            reconnectAttemptCount = 0
-            lastStreamErrorMessage = msg
-            connectionCallbacks.showAlert = true
-            connectionCallbacks.errorMessage = msg
-            if isImmersive {
-                viewModel.streamState = .stopping
-            }
-            // Soft teardown first (stop stream without full close).
-            // In immersive: keep activelyStreaming=true so we stay in mainContent and show
-            // errorHUDOverlay on top — switching to else branch causes space to dismiss/crash.
-            performReconnectTeardown {
-                NotificationCenter.default.post(name: Notification.Name("RealityKitStreamErrorNotification"), object: nil, userInfo: ["message": msg])
-                if !self.isImmersive {
-                    NotificationCenter.default.post(name: Notification.Name("RealityKitRetriesExhausted"), object: nil)
-                }
-            }
-        }
-    }
-    
-    private func performReconnectTeardown(completion: @escaping () -> Void) {
-        guard streamMan != nil else {
-            completion()
+    private func performCompleteTeardown(_ reason: StreamSession.StopReason) {
+        guard session.isLive else {
+            // Already stopped (e.g. the connection failed); tell the lifecycle this view is done.
+            NotificationCenter.default.post(name: .rkStreamDidTeardown, object: nil)
             return
         }
-        print("[StreamView] Reconnect teardown (soft stop, no RKStreamDidTeardown)")
-        renderGateOpen = false
-        statsTimer?.invalidate()
-        hintOverlayTimer?.invalidate()
-        hintOverlayTimer = nil
-        hideTimer?.invalidate()
-        scaleHUDFadeTimer?.invalidate()
-        reactiveLerpTimer?.invalidate()
-        idrWatchdogTimer1?.invalidate(); idrWatchdogTimer1 = nil
-        idrWatchdogTimer2?.invalidate(); idrWatchdogTimer2 = nil
-        postFirstFrameRebindTimer?.invalidate(); postFirstFrameRebindTimer = nil
-        firstFrameReceived = false
-        // Allow the next connection's first frame to re-arm the RKStreamFirstFrameShown
-        // notification. Without this reset the idempotency guard in videoContentShown()
-        // would silently swallow the reconnect signal.
-        connectionCallbacks.videoShown = false
-        controllerSupport?.cleanup()
-        controllerSupport = nil
-        
-        let sm = streamMan
-        streamMan = nil
-        var completed = false
-        let finish = {
-            guard !completed else { return }
-            completed = true
-            DispatchQueue.main.async { completion() }
-        }
-        sm?.stopStream(completion: { finish() })
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { finish() }
-    }
-    
-    private func performCompleteTeardown() {
-        guard !hasPerformedTeardown else { return }
-        hasPerformedTeardown = true
-        
         print("[StreamView] 🔴 TEARDOWN START")
         
         // Ensure MainViewModel isn't stuck in .running if the window was closed via system controls
@@ -2617,78 +2421,17 @@ struct _RealityKitStreamView: View {
             }
         }
         
-        // CRITICAL: Close render gate BEFORE stopping stream
-        renderGateOpen = false
-        
-        // Audio session will be reset after stopStream completes
-        
         statsTimer?.invalidate()
         hintOverlayTimer?.invalidate()
         hintOverlayTimer = nil
         hideTimer?.invalidate()
         scaleHUDFadeTimer?.invalidate()
         reactiveLerpTimer?.invalidate()
-        
-        idrWatchdogTimer1?.invalidate(); idrWatchdogTimer1 = nil
-        idrWatchdogTimer2?.invalidate(); idrWatchdogTimer2 = nil
         postFirstFrameRebindTimer?.invalidate(); postFirstFrameRebindTimer = nil
-        firstFrameReceived = false
         ambilightTexture = nil
-        
-        controllerSupport?.cleanup()
-        controllerSupport = nil
-        
-        // CRITICAL: Use stopStreamWithCompletion so we wait for LiStopConnection()
-        // to fully finish before declaring teardown complete. Without this, a new
-        // connection can start while the old one is still stopping, causing initLock
-        // timeout and black screen.
-        if let sm = streamMan {
-            print("[StreamView] Stopping StreamManager (waiting for completion)...")
-            streamMan = nil  // Clear reference now to prevent double-stop
-            
-            // Safety flag to ensure TEARDOWN COMPLETE fires exactly once, even if
-            // both the completion callback and the safety timeout race.
-            var teardownPosted = false
-            let postTeardown = {
-                guard !teardownPosted else { return }
-                teardownPosted = true
-                print("[StreamView] StreamManager stopped, clearing references")
-                
-                // CRITICAL: Reset audio session AFTER the stream has fully stopped.
-                // Resetting it earlier causes EXC_BAD_ACCESS if the audio thread is still running.
-                AudioHelpers.resetAudioSession()
-                
-                print("[StreamView] 🔴 TEARDOWN COMPLETE")
-                NotificationCenter.default.post(name: Notification.Name("RKStreamDidTeardown"), object: nil)
-            }
-            
-            sm.stopStream(completion: {
-                DispatchQueue.main.async {
-                    postTeardown()
-                }
-            })
-            
-            // Safety timeout: if stopStream completion doesn't fire within 5s
-            // (e.g., ENet control stream is stuck), forcibly post teardown so the
-            // UI state machine isn't stuck in .stopping forever. Connection.m has
-            // its own internal 10s+10s timeouts for initLock/LiStopConnection, so
-            // the underlying stop will eventually complete on its own.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
-                if !teardownPosted {
-                    print("[StreamView] ⚠️ StreamManager stop timed out after 5s - forcing teardown complete")
-                    postTeardown()
-                }
-            }
-        } else {
-            print("[StreamView] 🔴 TEARDOWN COMPLETE (no stream to stop)")
-            NotificationCenter.default.post(name: Notification.Name("RKStreamDidTeardown"), object: nil)
-        }
-    }
-    
-    private func cleanupResources() {
-        streamMan = nil
-        controllerSupport?.cleanup()
-        controllerSupport = nil
+
+        // The session closes the render gate, stops the stream, waits for it, then resets audio.
+        session.stop(reason)
     }
 
     private func updateDimmerDomesState() {
@@ -2762,7 +2505,10 @@ struct _RealityKitStreamView: View {
         self._streamConfig = streamConfig
         self.needsHdr = needsHdr
         self.isImmersive = isImmersive
-        self.controllerSupport = ControllerSupport(config: streamConfig.wrappedValue, delegate: DummyControllerDelegate())
+        self._session = StateObject(wrappedValue: StreamSession(
+            config: streamConfig.wrappedValue,
+            host: MainViewModel.shared.host(for: streamConfig.wrappedValue)
+        ))
         
         let bytesPerPixel = needsHdr ? 8 : 4
         let data = Data(count: bytesPerPixel * Int(streamConfig.wrappedValue.width) * Int(streamConfig.wrappedValue.height))
@@ -2988,7 +2734,7 @@ struct _RealityKitStreamView: View {
     private func startStatsTimer() {
         statsTimer?.invalidate()
         statsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            if let streamMan = self.streamMan, let stats = streamMan.getStatsOverlayText() {
+            if let stats = self.session.statsOverlayText() {
                 self.statsOverlayText = stats
             }
         }

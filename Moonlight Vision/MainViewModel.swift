@@ -652,6 +652,14 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
      
     // MARK: - Stream Control
 
+    /// The saved host a stream config points at, matched on any of its addresses.
+    func host(for config: StreamConfiguration) -> TemporaryHost? {
+        guard let address = config.host else { return nil }
+        return hosts.first {
+            $0.activeAddress == address || $0.address == address || $0.localAddress == address || $0.externalAddress == address
+        }
+    }
+
     func stream(app: TemporaryApp) -> StreamConfiguration? {
         prepareForNewStream()
         let config = StreamConfiguration()

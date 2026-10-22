@@ -24,29 +24,13 @@ import Combine
     @Published var videoShown: Bool = false
     @Published var showAlert = false
 
-    /// Reference to ControllerSupport for rumble forwarding (RealityKit path)
-    weak var controllerSupport: ControllerSupport?
-
-    /// When true, stageFailed/launchFailed are treated as retry failures (posted as ConnectionTerminatedForRetry).
-    var isReconnectingForRetry: Bool = false
-
     // Implement the protocol methods
     func connectionStarted() {
         print("Connection started")
     }
     
-    func connectionTerminated(_ errorCode: Int32) {
-        let msg = "Connection terminated with error code: \(errorCode)"
-        print("Connection terminated with error code: \(errorCode)")
-        Task { @MainActor in
-            self.errorMessage = msg
-            NotificationCenter.default.post(
-                name: Notification.Name("ConnectionTerminatedForRetry"),
-                object: nil,
-                userInfo: ["errorCode": errorCode, "message": msg]
-            )
-        }
-    }
+    // StreamSession handles connectionTerminated, stageFailed, launchFailed and rumble itself.
+    func connectionTerminated(_ errorCode: Int32) {}
     
     func stageStarting(_ stageName: UnsafePointer<CChar>!) {
         let stage = stageName.map { String(cString: $0) } ?? ""
@@ -60,55 +44,11 @@ import Combine
         Task { @MainActor in self.currentStage = stage }
     }
     
-    func stageFailed(_ stageName: UnsafePointer<CChar>!, withError errorCode: Int32, portTestFlags: Int32) {
-        let msg: String
-        if let stage = stageName {
-            let stageStr = String(cString: stage)
-            msg = "Stage \(stageStr) failed with error \(errorCode)"
-            print("Stage failed: \(stageStr), Error code: \(errorCode), Port test flags: \(portTestFlags)")
-        } else {
-            msg = "Stage failed with error \(errorCode)"
-        }
-        let reconnecting = isReconnectingForRetry
-        Task { @MainActor in
-            self.errorMessage = msg
-            if reconnecting {
-                NotificationCenter.default.post(
-                    name: Notification.Name("ConnectionTerminatedForRetry"),
-                    object: nil,
-                    userInfo: ["errorCode": errorCode, "message": msg]
-                )
-            } else {
-                self.showAlert = true
-                NotificationCenter.default.post(name: Notification.Name("RealityKitStreamErrorNotification"), object: nil, userInfo: ["message": msg])
-                NotificationCenter.default.post(name: Notification.Name("StreamStartFailed"), object: nil)
-            }
-        }
-    }
+    func stageFailed(_ stageName: UnsafePointer<CChar>!, withError errorCode: Int32, portTestFlags: Int32) {}
     
-    func launchFailed(_ message: String!) {
-        let msg = message ?? "Unknown error"
-        print("Launch failed: \(msg)")
-        let reconnecting = isReconnectingForRetry
-        Task { @MainActor in
-            self.errorMessage = message
-            if reconnecting {
-                NotificationCenter.default.post(
-                    name: Notification.Name("ConnectionTerminatedForRetry"),
-                    object: nil,
-                    userInfo: ["message": msg]
-                )
-            } else {
-                self.showAlert = true
-                NotificationCenter.default.post(name: Notification.Name("RealityKitStreamErrorNotification"), object: nil, userInfo: ["message": msg])
-                NotificationCenter.default.post(name: Notification.Name("StreamStartFailed"), object: nil)
-            }
-        }
-    }
+    func launchFailed(_ message: String!) {}
     
-    func rumble(_ controllerNumber: UInt16, lowFreqMotor: UInt16, highFreqMotor: UInt16) {
-        controllerSupport?.rumble(controllerNumber, lowFreqMotor: lowFreqMotor, highFreqMotor: highFreqMotor)
-    }
+    func rumble(_ controllerNumber: UInt16, lowFreqMotor: UInt16, highFreqMotor: UInt16) {}
     
     func connectionStatusUpdate(_ status: Int32) {
         print("Connection status updated to: \(status)")
@@ -120,9 +60,7 @@ import Combine
         Task { @MainActor in self.isHDRModeEnabled = enabled }
     }
     
-    func rumbleTriggers(_ controllerNumber: UInt16, leftTrigger: UInt16, rightTrigger: UInt16) {
-        controllerSupport?.rumbleTriggers(controllerNumber, leftTrigger: leftTrigger, rightTrigger: rightTrigger)
-    }
+    func rumbleTriggers(_ controllerNumber: UInt16, leftTrigger: UInt16, rightTrigger: UInt16) {}
     
     func setMotionEventState(_ controllerNumber: UInt16, motionType: UInt8, reportRateHz: UInt16) {
         print("Set motion event state: Controller \(controllerNumber), Motion type \(motionType), Report rate \(reportRateHz) Hz")
