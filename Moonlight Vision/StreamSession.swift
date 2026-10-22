@@ -63,8 +63,8 @@ final class StreamSession: ObservableObject {
     /// How long a new attempt waits for the previous connection to finish stopping before the
     /// session gives up and tells the user. A healthy stop takes well under a second.
     private static let previousStopTimeout: TimeInterval = 20.0
-    /// How long an attempt may take to show its first frame (app launch, handshake and first IDR)
-    /// before it counts as failed.
+    /// How long an attempt may take from creating its Connection (after the HTTP launch) to its
+    /// first frame (handshake and first IDR) before it counts as failed.
     private static let connectTimeout: TimeInterval = 45.0
 
     @Published private(set) var phase: Phase = .idle
@@ -188,8 +188,14 @@ final class StreamSession: ObservableObject {
         guard let manager = StreamManager(
             config: config,
             rendererProvider: { [weak self] in
+                // StreamManager calls this on main once the HTTP launch has finished, right before it
+                // creates the Connection. The connect timeout starts here, so a slow game launch on
+                // the host doesn't count against it.
                 let renderer = makeRenderer()
-                self?.renderer = renderer
+                MainActor.assumeIsolated {
+                    self?.renderer = renderer
+                    self?.armConnectWatchdog(generation: gen)
+                }
                 return renderer
             },
             connectionCallbacks: callbacks
@@ -200,11 +206,11 @@ final class StreamSession: ObservableObject {
         self.manager = manager
         managerQueue.addOperation(manager)
         armIdrWatchdog(generation: gen)
-        armConnectWatchdog(generation: gen)
     }
 
     /// Fail the attempt if it never shows a first frame, so `.connecting` can't hang.
     private func armConnectWatchdog(generation gen: Int) {
+        guard gen == generation else { return }
         connectWatchdog?.invalidate()
         connectWatchdog = Timer.scheduledTimer(withTimeInterval: Self.connectTimeout, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
