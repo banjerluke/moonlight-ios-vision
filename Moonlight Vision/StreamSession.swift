@@ -401,6 +401,20 @@ final class StreamSession: ObservableObject {
     }
 }
 
+extension StreamSession.Phase {
+    /// The reconnect attempt in progress (1...maxReconnectAttempts), or nil.
+    var reconnectAttempt: Int? {
+        if case .reconnecting(let attempt) = self { return attempt }
+        return nil
+    }
+
+    /// "Attempt n of m" while reconnecting, or nil.
+    var reconnectAttemptMessage: String? {
+        guard let reconnectAttempt else { return nil }
+        return String(format: MainViewModel.localizedStatic("reconnect_attempt"), reconnectAttempt, StreamSession.maxReconnectAttempts)
+    }
+}
+
 /// One attempt's ConnectionCallbacks. Failures and the first frame go to the session, tagged with
 /// the attempt's generation; everything else passes through to the port. Once the session
 /// supersedes the attempt, nothing reaches the port or the session any more, so a stale

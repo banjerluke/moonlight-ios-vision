@@ -265,11 +265,7 @@ struct _RealityKitStreamView: View {
 
     private var controllerSupport: ControllerSupport? { session.controllerSupport }
     private var firstFrameReceived: Bool { session.phase == .running }
-    private var reconnectAttempt: Int? {
-        if case .reconnecting(let attempt) = session.phase { return attempt }
-        return nil
-    }
-    private var isReconnecting: Bool { reconnectAttempt != nil }
+    private var isReconnecting: Bool { session.phase.reconnectAttempt != nil }
     /// After a lost connection the immersive space stays on mainContent with the error overlay;
     /// switching to the stopped overlay there dismisses or crashes the space.
     private var keepsContentAfterLostConnection: Bool {
@@ -604,7 +600,7 @@ struct _RealityKitStreamView: View {
             Text(viewModel.localized("reconnecting"))
                 .font(.headline)
                 .foregroundStyle(.white)
-            Text(String(format: viewModel.localized("reconnect_attempt"), reconnectAttempt ?? 0, StreamSession.maxReconnectAttempts))
+            Text(session.phase.reconnectAttemptMessage ?? "")
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.85))
         }
@@ -860,7 +856,7 @@ struct _RealityKitStreamView: View {
                         Text(viewModel.localized("reconnecting"))
                             .font(.subheadline)
                             .foregroundStyle(.white)
-                        Text(String(format: viewModel.localized("reconnect_attempt"), reconnectAttempt ?? 0, StreamSession.maxReconnectAttempts))
+                        Text(session.phase.reconnectAttemptMessage ?? "")
                             .font(.caption)
                             .foregroundStyle(.white.opacity(0.85))
                     }

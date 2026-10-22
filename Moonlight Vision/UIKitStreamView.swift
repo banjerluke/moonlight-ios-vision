@@ -38,11 +38,6 @@ struct UIKitStreamView: View {
         return session
     }
 
-    private var reconnectAttempt: Int? {
-        if case .reconnecting(let attempt) = session?.phase { return attempt }
-        return nil
-    }
-
     var body: some View {
         Group {
             if viewModel.activelyStreaming,
@@ -59,7 +54,7 @@ struct UIKitStreamView: View {
                     )
                     .persistentSystemOverlays(viewModel.streamSettings.dimPassthrough ? .hidden : .automatic)
                     .overlay {
-                        if reconnectAttempt != nil {
+                        if session.phase.reconnectAttempt != nil {
                             uikitReconnectingOverlay
                         }
                         if showCenterHint {
@@ -294,7 +289,7 @@ struct UIKitStreamView: View {
             Text(viewModel.localized("reconnecting"))
                 .font(.headline)
                 .foregroundStyle(.white)
-            Text(String(format: viewModel.localized("reconnect_attempt"), reconnectAttempt ?? 0, StreamSession.maxReconnectAttempts))
+            Text(session?.phase.reconnectAttemptMessage ?? "")
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.85))
         }
