@@ -25,7 +25,14 @@ struct DummyView: View {
     var body: some View {
         ProgressView()
             .onContinueUserActivity("dummy") { acc in
-                let config = try! acc.typedPayload(StreamConfiguration.self)
+                let config: StreamConfiguration
+                do {
+                    config = try acc.typedPayload(StreamConfiguration.self)
+                } catch {
+                    print("DummyView - failed to decode stream configuration: \(error)")
+                    dismiss()
+                    return
+                }
                 print("DUMMY GOT EVENT \(String(describing: config))")
                 
                 let destination = viewModel.getStreamDestination()
