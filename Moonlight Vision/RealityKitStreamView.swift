@@ -277,6 +277,12 @@ struct _RealityKitStreamView: View {
         return nil
     }
     private var isReconnecting: Bool { reconnectAttempt != nil }
+    /// After a lost connection the immersive space stays on mainContent with the error overlay;
+    /// switching to the stopped overlay there dismisses or crashes the space.
+    private var keepsContentAfterLostConnection: Bool {
+        guard isImmersive, case .ended(.connectionLost) = session.phase else { return false }
+        return true
+    }
     
     var allowedScaleMax: Float { 8.0 }
     var cornerRadiusFraction: Float { viewModel.streamSettings.realitykitScreenCornerRadius }
@@ -315,7 +321,7 @@ struct _RealityKitStreamView: View {
     
     var body: some View {
         let contentView = Group {
-            if viewModel.activelyStreaming {
+            if viewModel.activelyStreaming || keepsContentAfterLostConnection {
                 mainContent
             } else {
                 ZStack {
@@ -339,13 +345,9 @@ struct _RealityKitStreamView: View {
             .onAppear(perform: setupScene)
             .onDisappear(perform: teardownScene)
             .onChange(of: viewModel.shouldCloseStream) { _, shouldClose in
-                if shouldClose && session.isLive {
+                if shouldClose {
                     triggerCloseSequence()
                 }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("RequestStreamCloseFromMainMenu"))) { _ in
-                guard session.isLive else { return }
-                triggerCloseSequence()
             }
             .onChange(of: session.phase) { _, newPhase in
                 handleSessionPhase(newPhase)
@@ -804,7 +806,6 @@ struct _RealityKitStreamView: View {
                             },
                             closeAction: {
                                 viewModel.savedStreamConfigForResume = nil
-                                viewModel.streamState = .stopping
                                 triggerCloseSequence()
                             },
                             toggleKeyboardAction: { showVirtualKeyboard.toggle() },
@@ -1058,7 +1059,6 @@ struct _RealityKitStreamView: View {
         }
         controlState.closeAction = { [self] in
             viewModel.savedStreamConfigForResume = nil
-            viewModel.streamState = .stopping
             performCompleteTeardown(.user)
         }
         
@@ -2253,9 +2253,8 @@ struct _RealityKitStreamView: View {
     /// Per-attempt view setup. Returns the renderer factory for the session's StreamManager.
     private func prepareStreamAttempt(callbacks: ConnectionCallbacks) -> () -> AnyVideoDecoderRenderer {
         postFirstFrameRebindTimer?.invalidate(); postFirstFrameRebindTimer = nil
-        // Allow the next connection's first frame to re-arm the RKStreamFirstFrameShown
-        // notification. Without this reset the idempotency guard in videoContentShown()
-        // would silently swallow the reconnect signal.
+        // Let the next connection's first frame clear the error HUD again; videoContentShown()
+        // only publishes once per connection.
         connectionCallbacks.videoShown = false
         recreateStreamTexture()
 
@@ -2339,19 +2338,13 @@ struct _RealityKitStreamView: View {
         switch end {
         case .stopped:
             print("[StreamView] 🔴 TEARDOWN COMPLETE")
-            NotificationCenter.default.post(name: .rkStreamDidTeardown, object: nil)
         case .startFailed(let message):
             showStreamError(message)
-            NotificationCenter.default.post(name: Notification.Name("StreamStartFailed"), object: nil)
             triggerCloseSequence()
         case .connectionLost(let message):
+            // The volume window switches to the stopped overlay; the immersive space keeps its
+            // content and shows the error on top (see keepsContentAfterLostConnection).
             showStreamError(message)
-            if isImmersive {
-                // Keep activelyStreaming so the space stays on mainContent with the error overlay.
-                viewModel.streamState = .stopping
-            } else {
-                NotificationCenter.default.post(name: Notification.Name("RealityKitRetriesExhausted"), object: nil)
-            }
         }
     }
 
@@ -2405,25 +2398,8 @@ struct _RealityKitStreamView: View {
     }
     
     private func performCompleteTeardown(_ reason: StreamSession.StopReason) {
-        guard session.isLive else {
-            // Already stopped (e.g. the connection failed); tell the lifecycle this view is done.
-            NotificationCenter.default.post(name: .rkStreamDidTeardown, object: nil)
-            return
-        }
+        guard session.isLive else { return }
         print("[StreamView] 🔴 TEARDOWN START")
-        
-        // Ensure MainViewModel isn't stuck in .running if the window was closed via system controls
-        let wasHidingForResume = viewModel.isHidingForResume
-        let isCurrentSession = (viewModel.currentStreamConfig.sessionUUID == streamConfig.sessionUUID)
-        if isCurrentSession && viewModel.activelyStreaming && viewModel.streamState != .stopping {
-            if wasHidingForResume {
-                viewModel.isHidingForResume = false
-            } else {
-                // User closed the window via system controls. 
-                // Implicitly save the config so they can resume via the Main Menu or App Intent.
-                viewModel.savedStreamConfigForResume = streamConfig
-            }
-        }
         
         statsTimer?.invalidate()
         hintOverlayTimer?.invalidate()
@@ -2952,7 +2928,6 @@ struct _RealityKitStreamView: View {
 extension Notification.Name {
     static let mainViewWindowClosed = Notification.Name("MainViewWindowClosed")
     static let resumeStreamFromMenu = Notification.Name("ResumeStreamFromMenu")
-    static let rkStreamDidTeardown = Notification.Name("RKStreamDidTeardown")
     static let immersiveScreenWakeRequested = Notification.Name("ImmersiveScreenWakeRequested")
 }
 

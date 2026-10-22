@@ -73,14 +73,11 @@ import Combine
     func videoContentShown() {
         print("Video content shown")
         Task { @MainActor in
-            // Only post the first-frame notification once per stream session.
             // DrawableVideoDecoder may call this on every IDR frame in error-recovery
-            // paths; without this guard each call queues a Task that fires onChange
-            // observers multiple times per SwiftUI frame.
+            // paths; only publish the first one per connection.
             guard !self.videoShown else { return }
             self.videoShown = true
             self.showAlert = false
-            NotificationCenter.default.post(name: Notification.Name("RKStreamFirstFrameShown"), object: nil)
         }
     }
 }

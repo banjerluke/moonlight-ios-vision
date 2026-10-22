@@ -581,9 +581,6 @@
         if (self->_connectedCallback) {
             self->_connectedCallback();
         }
-#if TARGET_OS_VISION
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"StreamFirstFrameShownNotification" object:nil];
-#endif
     });
 }
 

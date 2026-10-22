@@ -201,9 +201,6 @@ struct UIKitStreamView: View {
                     .onChange(of: viewModel.shouldCloseStream) { _, val in
                         if val { handleCloseFromViewModel() }
                     }
-                    .onReceive(NotificationCenter.default.publisher(for: Notification.Name("RequestStreamCloseFromMainMenu"))) { _ in
-                        handleCloseFromViewModel()
-                    }
                     .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ResumeStreamFromMenu"))) { _ in
                         dismissWindow(id: "mainView")
                         let currentMode = SpatialAudioMode(rawValue: viewModel.streamSettings.spatialAudioMode) ?? .window
@@ -229,14 +226,10 @@ struct UIKitStreamView: View {
                         
                         Button {
                             lastStreamErrorMessage = nil
-                            viewModel.streamState = .stopping
                             viewModel.savedStreamConfigForResume = nil
                             openWindow(id: "mainView")
                             dismissWindow(id: "classicStreamingWindow")
                             streamConfig = nil
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                NotificationCenter.default.post(name: Notification.Name("StreamDidTeardownNotification"), object: nil)
-                            }
                         } label: {
                             Label(viewModel.localized("open_main_menu"), systemImage: "house.fill")
                                 .frame(maxWidth: .infinity)
@@ -280,10 +273,6 @@ struct UIKitStreamView: View {
                 openWindow(id: "mainView")
                 dismissWindow(id: "classicStreamingWindow")
                 streamConfig = nil
-                viewModel.streamState = .stopping
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    NotificationCenter.default.post(name: Notification.Name("StreamDidTeardownNotification"), object: nil)
-                }
             } label: {
                 Label(viewModel.localized("open_main_menu"), systemImage: "house.fill")
                     .padding(.horizontal, 16)
@@ -347,18 +336,6 @@ struct UIKitStreamView: View {
     private func performUIKitTeardown(_ reason: StreamSession.StopReason) {
         guard let session, session.isLive else { return }
 
-        let wasHidingForResume = viewModel.isHidingForResume
-        let isCurrentSession = (viewModel.currentStreamConfig.sessionUUID == session.config.sessionUUID)
-        if isCurrentSession && viewModel.activelyStreaming && viewModel.streamState != .stopping {
-            if wasHidingForResume {
-                viewModel.isHidingForResume = false
-            } else {
-                // User closed the window via system controls.
-                // Implicitly save the config so they can resume via the Main Menu or App Intent.
-                viewModel.savedStreamConfigForResume = session.config
-            }
-        }
-        
         if viewModel.streamSettings.rememberStreamSettings {
             saveWindowSizeForRestore()
         }
@@ -374,12 +351,10 @@ struct UIKitStreamView: View {
             closeWindow()
         case .startFailed(let message):
             lastStreamErrorMessage = message
-            NotificationCenter.default.post(name: Notification.Name("StreamStartFailed"), object: nil)
             closeWindow()
         case .connectionLost(let message):
             lastStreamErrorMessage = message
             _UIKitStreamView.controllerReference.object?.stopStream()
-            NotificationCenter.default.post(name: Notification.Name("UIKitRetriesExhausted"), object: nil)
         }
     }
 
@@ -387,7 +362,6 @@ struct UIKitStreamView: View {
         _UIKitStreamView.controllerReference.object?.stopStream()
         streamConfig = nil
         dismissWindow(id: "classicStreamingWindow")
-        NotificationCenter.default.post(name: Notification.Name("StreamDidTeardownNotification"), object: nil)
     }
 
     private func handleWindowDisappearance() {
