@@ -135,7 +135,6 @@ public class TemporarySettings: NSObject {
     @objc public var gazeTouchMode = false
     @objc public var gazeCursorOffsetX: Int = 0
     @objc public var gazeCursorOffsetY: Int = 0
-    @objc public var hideHandsIn360Environment = false
 
     @objc public var useFramePacing = false
     @objc public var multiController = false

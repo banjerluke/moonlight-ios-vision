@@ -426,7 +426,7 @@ struct _RealityKitStreamView: View {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .ambientAverageColorUpdated)) { notification in
-                guard dimLevel == 2 || dimLevel == 10 || dimLevel == 12 else { return }  // Only process in Reactive V1, V2, and Starfield modes
+                guard dimLevel == 2 || dimLevel == 10 else { return }  // Only process in Reactive V1 and V2 modes
                 if let r = notification.userInfo?["r"] as? Float,
                    let g = notification.userInfo?["g"] as? Float,
                    let b = notification.userInfo?["b"] as? Float {
@@ -531,7 +531,7 @@ struct _RealityKitStreamView: View {
                 updateScreenMaterial()
                 if newValue {
                     startReactiveLerp()
-                } else if dimLevel != 2 && dimLevel != 10 && dimLevel != 13 {
+                } else if dimLevel != 2 && dimLevel != 10 {
                     stopReactiveLerp()
                 }
             }
@@ -1393,8 +1393,8 @@ struct _RealityKitStreamView: View {
                         
                         updateDimmerDomesState()
                         
-                        // Handle Reactive modes (V1, V2, and V3)
-                        if val == 2 || val == 10 || val == 13 {
+                        // Handle Reactive modes (V1 and V2)
+                        if val == 2 || val == 10 {
                             startReactiveLerp()
                 } else {
                             stopReactiveLerp()

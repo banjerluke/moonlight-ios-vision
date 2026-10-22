@@ -236,14 +236,7 @@
 "dim_night" = "Night";
 "dim_reactive_v1" = "Reactive V1";
 "dim_eclipse" = "Eclipse";
-"dim_midnight" = "Midnight";
-"dim_twilight" = "Twilight";
-"dim_dawn" = "Dawn";
-"dim_sunrise" = "Sunrise";
-"dim_woodland" = "Woodland";
 "dim_reactive_v2" = "Reactive V2";
-"dim_starfield" = "Starfield";
-"dim_desert" = "Desert";
 "dim_off" = "Dimming Off";
 
 // Floating hints & popups

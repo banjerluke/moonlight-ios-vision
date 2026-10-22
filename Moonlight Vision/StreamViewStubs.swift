@@ -60,14 +60,7 @@ struct DimmingPickerView: View {
         (1, "dim_night"),
         (2, "dim_reactive_v1"),
         (4, "dim_eclipse"),
-        (5, "dim_midnight"),
-        (6, "dim_twilight"),
-        (7, "dim_dawn"),
-        (8, "dim_sunrise"),
-        (9, "dim_woodland"),
-        (10, "dim_reactive_v2"),
-        (12, "dim_starfield"),
-        (14, "dim_desert")
+        (10, "dim_reactive_v2")
     ]
     
     var body: some View {
