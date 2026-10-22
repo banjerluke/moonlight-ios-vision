@@ -556,8 +556,8 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
         // --- Back on main actor — process results ---
         discoveryManager?.resumeDiscovery(for: host)
 
-        if appListResponse?.isStatusOk() == true {
-            let serverApps = (appListResponse!.getAppList() as! Set<TemporaryApp>)
+        if appListResponse?.isStatusOk() == true,
+           let serverApps = appListResponse?.getAppList() as? Set<TemporaryApp> {
             print("refreshAppsFor - Received \(serverApps.count) apps from server.")
 
             var newAppList = OrderedSet<TemporaryApp>()
