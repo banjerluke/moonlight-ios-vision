@@ -84,7 +84,10 @@ struct MainContentView: View {
                                 let dest = viewModel.getStreamDestination()
                                 switch dest {
                                 case .window(let id):
-                                    if let config = viewModel.savedStreamConfigForResume {
+                                    if let session = viewModel.activeSession, session.isLive {
+                                        openWindow(id: id, value: session.config)
+                                    } else if let config = viewModel.savedStreamConfigForResume {
+                                        viewModel.beginSession(config: config)
                                         openWindow(id: id, value: config)
                                     } else {
                                         openWindow(id: id)

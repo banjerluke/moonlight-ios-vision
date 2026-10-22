@@ -9,6 +9,7 @@
 //  Copyright © 2024 Moonlight Game Streaming Project. All rights reserved.
 //
 
+import Combine
 import Foundation
 import OrderedCollections
 import VideoToolbox
@@ -43,6 +44,17 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
     @Published var activelyStreaming = false
     @Published var shouldCloseStream = false
     @Published var streamState: StreamLifecycleState = .idle
+    /// The current stream's connection. Replaced by `beginSession`; kept after it ends so the
+    /// stream views can show how it ended.
+    @Published private(set) var activeSession: StreamSession? {
+        didSet {
+            // Views read the session through this model, so republish its changes.
+            activeSessionObservation = activeSession?.objectWillChange.sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+        }
+    }
+    private var activeSessionObservation: AnyCancellable?
     @Published var activeSessionToken: String = ""
     @Published var currentlyStreamingAppId: String? = nil
     @Published var reconnectCooldownUntil: Date? = nil
@@ -652,6 +664,16 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
      
     // MARK: - Stream Control
 
+    /// Creates the session a stream window or space will run. Call before opening it.
+    @discardableResult
+    func beginSession(config: StreamConfiguration) -> StreamSession {
+        let session = StreamSession(config: config, host: host(for: config))
+        activeSession = session
+        activelyStreaming = true
+        streamState = .starting
+        return session
+    }
+
     /// The saved host a stream config points at, matched on any of its addresses.
     func host(for config: StreamConfiguration) -> TemporaryHost? {
         guard let address = config.host else { return nil }
@@ -751,8 +773,7 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
         print("stream - Final supportedVideoFormats: \(String(format: "0x%04X", config.supportedVideoFormats))")
 
         currentStreamConfig = config
-        activelyStreaming = true
-        streamState = .starting
+        beginSession(config: config)
         currentlyStreamingAppId = app.id ?? app.name
         print("stream - Stream configuration complete. Ready to start streaming.")
         return currentStreamConfig

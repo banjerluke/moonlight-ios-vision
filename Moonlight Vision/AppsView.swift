@@ -179,10 +179,7 @@ struct AppsView: View {
         // If stream window/space was closed by system gesture (e.g. crown),
         // no receiver may exist for ResumeStreamFromMenu. Reopen from saved config.
         guard let saved = viewModel.savedStreamConfigForResume else { return }
-        if viewModel.streamState == .idle {
-            viewModel.streamState = .starting
-        }
-        viewModel.activelyStreaming = true
+        viewModel.beginSession(config: saved)
 
         let settings = viewModel.streamSettings
         if settings.renderer == .realitykit && settings.realitykitImmersiveMode {

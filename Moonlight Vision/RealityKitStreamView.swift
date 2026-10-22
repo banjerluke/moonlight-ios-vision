@@ -37,8 +37,11 @@ struct RealityKitStreamView: View {
     
     var body: some View {
         if let config = streamConfig {
-            if config.sessionUUID == viewModel.activeSessionToken {
+            if config.sessionUUID == viewModel.activeSessionToken,
+               let session = viewModel.activeSession,
+               session.config.sessionUUID == config.sessionUUID {
                 _RealityKitStreamView(
+                    session: session,
                     streamConfig: Binding<StreamConfiguration>(
                         get: { config },
                         set: { streamConfig = $0 }
@@ -47,7 +50,8 @@ struct RealityKitStreamView: View {
                     isImmersive: isImmersive,
                     swapAction: { }
                 )
-                .id(config.sessionUUID)
+                // One view per session, so resuming with a new session starts it from onAppear.
+                .id(ObjectIdentifier(session))
             } else {
                 // Ghost/stale window: a different session UUID is active.
                 // Redirect to main menu and close this window.
@@ -134,7 +138,7 @@ struct _RealityKitStreamView: View {
     @State private var volumeYLimits: ClosedRange<Float> = -0.5...0.5
     @State private var volumeZLimits: ClosedRange<Float> = -0.5...0.5
     
-    @StateObject private var session: StreamSession
+    @ObservedObject private var session: StreamSession
     @StateObject var connectionCallbacks: ObservableConnectionManager = .init()
     @State private var lastStreamErrorMessage: String? = nil
     
@@ -2500,15 +2504,12 @@ struct _RealityKitStreamView: View {
         updateDimmerDomesState()
     }
 
-    internal init(streamConfig: Binding<StreamConfiguration>, needsHdr: Bool, isImmersive: Bool, swapAction: @escaping () -> Void) {
+    internal init(session: StreamSession, streamConfig: Binding<StreamConfiguration>, needsHdr: Bool, isImmersive: Bool, swapAction: @escaping () -> Void) {
         self.swapAction = swapAction
         self._streamConfig = streamConfig
         self.needsHdr = needsHdr
         self.isImmersive = isImmersive
-        self._session = StateObject(wrappedValue: StreamSession(
-            config: streamConfig.wrappedValue,
-            host: MainViewModel.shared.host(for: streamConfig.wrappedValue)
-        ))
+        self.session = session
         
         let bytesPerPixel = needsHdr ? 8 : 4
         let data = Data(count: bytesPerPixel * Int(streamConfig.wrappedValue.width) * Int(streamConfig.wrappedValue.height))
