@@ -122,7 +122,7 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 | Ticket | Thread | Branch | State |
 |---|---|---|---|
 | A decoder | @thread:thr_ewqb8v2dae | own worktree | running |
-| B lifecycle | @thread:thr_hewxt4aksp | own worktree | running |
+| B lifecycle | @thread:thr_hewxt4aksp | bb/cleanup-b-connection-audio-lifecycle-fixes-thr_hewxt4aksp | merged |
 | C settings | @thread:thr_rtzxjcquha | own worktree | running |
 | D deletions | @thread:thr_978eyitr5x | bb/cleanup-d-dead-code-and-asset-deletions-thr_978eyitr5x | merged |
 | E+F StreamSession | | | waiting on wave 1 |
@@ -132,3 +132,5 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 ## Decisions and notes
 - No test target, because the simulator can't link and adding one now is YAGNI. The phase enum in F is the best candidate for the first real tests once the app links.
 - The broken link on `fb34983` is out of scope for this work, but Luke should know about it.
+- B: `ArStart`/`ArStop` were never registered with the library, so `audioIsStopping` was always false and the audio engine was never stopped between streams. Removed them; `ArCleanup` now stops and releases the renderer. `OutputAU.m:336` `dispatch_sync(main)` under `initLock` isn't a deadlock today, but would become one if F ever blocks main waiting on stop or start. The same goes for A's `main.sync` in `setupLowLevelTexture`.
+- D: `OutputAU.m:17` imports `TemporarySettings.h` without using it (left for F or a later pass).
