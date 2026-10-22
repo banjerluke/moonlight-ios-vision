@@ -125,9 +125,9 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 | B lifecycle | @thread:thr_hewxt4aksp | bb/cleanup-b-connection-audio-lifecycle-fixes-thr_hewxt4aksp | merged |
 | C settings | @thread:thr_rtzxjcquha | bb/cleanup-c-settings-fixes-key-registry-thr_rtzxjcquha | merged |
 | D deletions | @thread:thr_978eyitr5x | bb/cleanup-d-dead-code-and-asset-deletions-thr_978eyitr5x | merged |
-| E+F StreamSession | @thread:thr_f7mz2irbqy | own worktree | E done (4057→3200 lines); F design approved, phase 2 running |
+| E+F StreamSession | @thread:thr_f7mz2irbqy | bb/cleanup-e-f-realitykitstreamview-extractions-str-thr_f7mz2irbqy | merged |
 | G shimmer | @thread:thr_c5z7nwws7h | bb/cleanup-g-realitykit-shimmer-sampler-filtering-thr_c5z7nwws7h | merged (sampler + A follow-up `32eb221`, present via command buffer); needs Luke on device |
-| Review | | | |
+| Review | orchestrator | — | running |
 
 ## Decisions and notes
 - No test target, because the simulator can't link and adding one now is YAGNI. The phase enum in F is the best candidate for the first real tests once the app links.
@@ -182,3 +182,13 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 - `hideHandsIn360Environment` has no effect, because the 360° environment was never wired up. Remove the setting?
 - Luke: the shimmer is on the curved screen viewed roughly head-on, and sharp text is worst, so it's aliasing at ~1:1 rather than an anisotropy problem. G is adding a live "Text anti-shimmer" mip-bias setting (default 0) so it can be tuned on device. Luke approved removing dimming options 5–14 and `hideHandsIn360Environment`; that's assigned to F's final commit. When everything is done, push the integration branch to `origin` (banjerluke) for Luke's HDR test.
 - G follow-up `faf24ad`: a "Text Anti-Shimmer" setting (0–2, default 0) drives the sampler's `lodMinClamp`, and the SBS `dynamic_min_lod_clamp`. An offscreen test on macOS showed `UnlitMaterial` ignores `lodBias`, but `lodMinClamp` gives graded softening. Start at 0.5; the useful range is 0–1. If no value is acceptable, the next step is a ShaderGraph multi-tap prefilter.
+- F merged. `StreamSession` + `StreamLauncher`; `streamState` is computed. `activelyStreaming` stays stored, because "show content" differs from "session live" after a lost connection. Reactive V2 (dim level 10) is kept, but nothing posts `ambientAverageColorUpdated`, so neither reactive mode reacts.
+- Left over after F:
+  - per-mode display values still leak into global settings
+  - gyro/LED forwarding, and `OutputAU._isPlaying`, need their own tickets
+  - the 1.5s/1.2s start delays are still there
+  - a graceful host termination now retries on both renderers; should it?
+
+### Open questions for Luke (continued)
+- When the host ends the stream gracefully, should either renderer retry? Both do now.
+- Reactive V1/V2 never react, because there's no colour source. Fix them, or remove them?
