@@ -39,12 +39,38 @@ def Xform "Root"
             int ui:nodegraph:node:stackingOrder = 79
         }
 
+        def Shader "TexCoord"
+        {
+            uniform token info:id = "ND_texcoord_vector2"
+            float2 outputs:out
+            float2 ui:nodegraph:node:pos = (-1050, 150)
+        }
+
+        def Shader "LeftUV"
+        {
+            uniform token info:id = "ND_multiply_vector2"
+            float2 inputs:in1.connect = </Root/SBSMaterial/TexCoord.outputs:out>
+            float2 inputs:in2 = (0.5, 1)
+            float2 outputs:out
+            float2 ui:nodegraph:node:pos = (-850, 100)
+        }
+
+        def Shader "RightUV"
+        {
+            uniform token info:id = "ND_add_vector2"
+            float2 inputs:in1.connect = </Root/SBSMaterial/LeftUV.outputs:out>
+            float2 inputs:in2 = (0.5, 0)
+            float2 outputs:out
+            float2 ui:nodegraph:node:pos = (-650, 300)
+        }
+
         def Shader "Left"
         {
-            uniform token info:id = "ND_tiledimage_color3"
+            uniform token info:id = "ND_RealityKitTexture2D_color3"
             asset inputs:file.connect = </Root/SBSMaterial.inputs:texture>
-            string inputs:filtertype
-            float2 inputs:uvtiling = (0.5, 1)
+            float2 inputs:texcoord.connect = </Root/SBSMaterial/LeftUV.outputs:out>
+            int inputs:max_anisotropy = 16
+            bool inputs:no_flip_v = 1
             color3f outputs:out
             float2 ui:nodegraph:node:pos = (-405.69922, 10.6875)
             float2 ui:nodegraph:node:size = (158.5, 235)
@@ -53,15 +79,11 @@ def Xform "Root"
 
         def Shader "Right"
         {
-            uniform token info:id = "ND_tiledimage_color3"
-            color3f inputs:default
+            uniform token info:id = "ND_RealityKitTexture2D_color3"
             asset inputs:file.connect = </Root/SBSMaterial.inputs:texture>
-            string inputs:filtertype
-            float2 inputs:realworldimagesize
-            float2 inputs:realworldtilesize
-            float2 inputs:texcoord
-            float2 inputs:uvoffset = (0.5, 0)
-            float2 inputs:uvtiling = (0.5, 1)
+            float2 inputs:texcoord.connect = </Root/SBSMaterial/RightUV.outputs:out>
+            int inputs:max_anisotropy = 16
+            bool inputs:no_flip_v = 1
             color3f outputs:out
             float2 ui:nodegraph:node:pos = (-409.65234, 275.46094)
             float2 ui:nodegraph:node:size = (158.5, 235)

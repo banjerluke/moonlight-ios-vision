@@ -125,8 +125,8 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 | B lifecycle | @thread:thr_hewxt4aksp | bb/cleanup-b-connection-audio-lifecycle-fixes-thr_hewxt4aksp | merged |
 | C settings | @thread:thr_rtzxjcquha | bb/cleanup-c-settings-fixes-key-registry-thr_rtzxjcquha | merged |
 | D deletions | @thread:thr_978eyitr5x | bb/cleanup-d-dead-code-and-asset-deletions-thr_978eyitr5x | merged |
-| E+F StreamSession | | | waiting on wave 1 |
-| G shimmer | @thread:thr_c5z7nwws7h | own worktree | running (hypothesis: default sampler, no anisotropic filtering) |
+| E+F StreamSession | @thread:thr_f7mz2irbqy | own worktree | phase 1: extractions + design proposal |
+| G shimmer | @thread:thr_c5z7nwws7h | bb/cleanup-g-realitykit-shimmer-sampler-filtering-thr_c5z7nwws7h | merged (sampler + A follow-up `32eb221`, present via command buffer); needs Luke on device |
 | Review | | | |
 
 ## Decisions and notes
@@ -164,3 +164,10 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 ### Open questions for Luke
 - `dimPassthrough` defaults to `false` on a fresh install, but "reset all" sets it to `true`. Which is right? C kept `true` for reset.
 - The Core Data model still defaults `brightness`/`gamma`/`saturation` to 0.0. C works around it at load time. Do you want a `v1.11` model version with real defaults?
+- G: RealityKit's default sampler was already trilinear, so the starting hypothesis was mostly wrong. Merged: 16× anisotropic + clamp-to-edge for every video material, and the SBS ShaderGraph moved to `RealityKitTexture2D` (checked pixel for pixel against the old graph offscreen on macOS). This helps oblique sharpness and edge bleed, but probably not the shimmer itself. Also found: the decoder presents drawables before the command buffer completes (sent to A as a follow-up).
+
+### Shimmer experiments for Luke, in order
+1. Build this branch and compare against `e32aa65`. Use small static text, view the curve edge-on, and watch the screen border.
+2. If it still shimmers, add `sampler.lodBias = 0.5` in `videoTexture(_:)`. That's one line; it trades a softer picture for less aliasing.
+3. Change the stream resolution and the screen distance. Does the shimmer track the texel-to-pixel ratio?
+4. Turn HDR off. If the shimmer goes, the cause is linear-vs-PQ values in the `rgba16Float` texture, on the decoder side.
