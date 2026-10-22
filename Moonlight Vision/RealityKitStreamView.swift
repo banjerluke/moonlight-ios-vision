@@ -264,7 +264,9 @@ struct _RealityKitStreamView: View {
     @State private var postFirstFrameRebindTimer: Timer?
 
     private var controllerSupport: ControllerSupport? { session.controllerSupport }
-    private var firstFrameReceived: Bool { session.phase == .running }
+    /// The current connection is showing video: false while connecting, reconnecting or stopped.
+    /// The ambilight glow hides outside this, as it did before StreamSession, rather than holding a stale frame.
+    private var isShowingVideo: Bool { session.phase == .running }
     private var isReconnecting: Bool { session.phase.reconnectAttempt != nil }
     /// After a lost connection the immersive space stays on mainContent with the error overlay;
     /// switching to the stopped overlay there dismisses or crashes the space.
@@ -527,7 +529,7 @@ struct _RealityKitStreamView: View {
                     stopReactiveLerp()
                 }
             }
-            .onChange(of: firstFrameReceived) { _, _ in 
+            .onChange(of: isShowingVideo) { _, _ in 
                 updateScreenMaterial() 
             }
             .onChange(of: viewModel.streamSettings.realitykitTextAntiShimmer) { _, _ in
@@ -1637,9 +1639,9 @@ struct _RealityKitStreamView: View {
             ambMat.blending = .transparent(opacity: 1.0)
             ambPlane.model?.materials = [ambMat]
             
-            let isAmbilightEnabled = viewModel.streamSettings.reactiveLightingEnabled && firstFrameReceived
+            let isAmbilightEnabled = viewModel.streamSettings.reactiveLightingEnabled && isShowingVideo
             ambPlane.components.set(OpacityComponent(opacity: isAmbilightEnabled ? 1.0 : 0.0))
-            print("[Ambilight] Material updated. Opacity: \(isAmbilightEnabled ? 1.0 : 0.0) (reactiveEnabled: \(viewModel.streamSettings.reactiveLightingEnabled), firstFrameReceived: \(firstFrameReceived)). Scale: \(ambPlane.scale.x)")
+            print("[Ambilight] Material updated. Opacity: \(isAmbilightEnabled ? 1.0 : 0.0) (reactiveEnabled: \(viewModel.streamSettings.reactiveLightingEnabled), isShowingVideo: \(isShowingVideo)). Scale: \(ambPlane.scale.x)")
         }
     }
     
