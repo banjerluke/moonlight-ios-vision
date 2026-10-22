@@ -223,8 +223,6 @@ struct _RealityKitStreamView: View {
     @State private var inputMode: InputMode = .gazeControl // Three-mode input toggle (default: gaze control)
     @State private var gazeController = GazeInputController()
 
-    private let headStorage = HeadPositionStorage()
-    
     private let attachmentLayoutAspectBox = MutableBox<Float>(-1)
     private let attachmentLayoutFpsMouseBox = MutableBox<Bool?>(nil)
     // The input overlay only has content once the session's ControllerSupport exists (after connect),
@@ -1309,31 +1307,10 @@ struct _RealityKitStreamView: View {
     private func calculateUV(localPos: SIMD3<Float>) -> SIMD2<Float> {
         // Since localPos is perfectly mapped to the unscaled mesh's local coordinate space,
         // we can simply map it back using the physical constants that generated the mesh!
-        let meterX = localPos.x
         let meterY = localPos.y
-        
-        let physicalWidth = CURVED_MAX_WIDTH_METERS // 2.0
-        let physicalHeight = physicalWidth * screenAspect
-        
-        let curveMagnitude = effectiveCurvature
-        let maxAngle = CURVED_MAX_ANGLE
-        let currentAngle = maxAngle * max(0.0, min(curveMagnitude, 2.0))
-        
-        var u: Float = 0.5
-        
-        if currentAngle < 0.001 {
-            // Flat Mode
-            u = (meterX / physicalWidth) + 0.5
-        } else {
-            // Curved Mode
-            let scaledRadius = physicalWidth / currentAngle
-            let maxTheoreticalX = scaledRadius * sin(currentAngle / 2.0)
-            
-            let clampedX = max(-maxTheoreticalX, min(maxTheoreticalX, meterX))
-            let theta = asin(clampedX / scaledRadius)
-            
-            u = (theta / currentAngle) + 0.5
-        }
+        let physicalHeight = CURVED_MAX_WIDTH_METERS * screenAspect
+
+        let u = curvedScreenU(atX: localPos.x, curveMagnitude: effectiveCurvature)
 
         // v goes from 0 (top) to 1 (bottom)
         let v = 0.5 - (meterY / physicalHeight) - GAZE_VERTICAL_OFFSET
@@ -1368,13 +1345,12 @@ struct _RealityKitStreamView: View {
                 isControllerMode: inputMode == .controller,
                 curvature: effectiveCurvature,
                 streamConfig: streamConfig,
-                headStorage: headStorage,
                 fpsMouseCapture: viewModel.streamSettings.fpsMouseCapture
             )
-            .frame(
-                width: (showVirtualKeyboard || inputMode == .controller) ? 1920 : 1,
-                height: (showVirtualKeyboard || inputMode == .controller) ? (1920 / CGFloat(screenAspect)) : 1
-            )
+            // A fixed frame, so the scale layoutAttachments measures never depends on the input mode or aspect
+            // (it scales each axis to the screen). Outside controller mode it sits behind the screen's collision
+            // and isn't hit-testable.
+            .frame(width: 1920, height: 1080)
             .ignoresSafeArea()
             .contentShape(Rectangle())
             .focusable()
@@ -1748,40 +1724,11 @@ struct _RealityKitStreamView: View {
             screen = ModelEntity(mesh: mesh, materials: [material])
         }
 
-        // Generate curved collision mesh that matches visual geometry
-        let collisionMesh: MeshResource
-        do {
-            collisionMesh = try generateCurvedRoundedPlane(
-                width: CURVED_MAX_WIDTH_METERS,
-                aspectRatio: screenAspect,
-                resolution: (256, 256),
-                curveMagnitude: effectiveCurvature,
-                cornerRadiusFraction: 0
-            )
-        } catch {
-            print("⚠️ Failed to generate collision mesh: \(error). Using flat fallback.")
-            collisionMesh = .generatePlane(width: CURVED_MAX_WIDTH_METERS, height: CURVED_MAX_WIDTH_METERS * screenAspect)
-        }
-            
-            Task {
-            if let collisionShape = try? await ShapeResource.generateStaticMesh(from: collisionMesh) {
-                await MainActor.run {
-                    screen.components.set(CollisionComponent(
-                        shapes: [collisionShape],
-                        filter: CollisionFilter(
-                            group: .screenEntity,
-                            mask: .all
-                        )
-                    ))
-                }
-            }
-        }
-        
-        screen.components.set(InputTargetComponent(allowedInputTypes: .all))
-        
         screen.position = SIMD3<Float>(0, 0, -1.5)
         
         content.add(screen)
+        // Collision and input targeting depend on the input mode, which may already be set.
+        updateScreenInteractivity()
         if screenOriginalParent == nil { screenOriginalParent = screen.parent }
         
         // Setup Ambilight Stack (Single layer for smooth bloom)
@@ -1822,13 +1769,13 @@ struct _RealityKitStreamView: View {
         
         if let inputEnt = attachments.entity(for: "inputOverlay") {
             if inputEnt.parent !== screen { screen.addChild(inputEnt) }
-            inputEnt.position = [0.0 as Float, 0.0 as Float, Float(0.005)]
+            inputEnt.position = [0.0 as Float, 0.0 as Float, INPUT_OVERLAY_Z]
             
             let bounds = inputEnt.visualBounds(relativeTo: screen)
             if bounds.extents.x > 0 {
                 let currentScaleX = max(inputEnt.scale.x, 0.0001)
                 let unscaledWidth = Float(bounds.extents.x) / currentScaleX
-                let desiredLocalWidth = CURVED_MAX_WIDTH_METERS * 1.05
+                let desiredLocalWidth = CURVED_MAX_WIDTH_METERS * INPUT_OVERLAY_WIDTH_SCALE
                 let scale = desiredLocalWidth / unscaledWidth
                 inputEnt.scale = [scale, scale, scale]
             }
@@ -1940,19 +1887,7 @@ struct _RealityKitStreamView: View {
                     curveMagnitude: currentCurve,
                     cornerRadiusFraction: 0
                 ) {
-                    Task {
-                        if let collisionShape = try? await ShapeResource.generateStaticMesh(from: collisionMesh) {
-                            await MainActor.run {
-                                self.screen.components.set(CollisionComponent(
-                                    shapes: [collisionShape],
-                                    filter: CollisionFilter(
-                                        group: .screenEntity,
-                                        mask: .all
-                                    )
-                                ))
-                            }
-                        }
-                    }
+                    setScreenCollision(from: collisionMesh)
 
                     self.lastGeneratedCurveBox.value = currentCurve
                     self.lastGeneratedAspectBox.value = self.screenAspect
@@ -2047,9 +1982,6 @@ struct _RealityKitStreamView: View {
         
         if let head = headAnchor {
             let p = head.position(relativeTo: nil)
-            
-            let localHead = screen.convert(position: .zero, from: head)
-            headStorage.positionInScreenSpace = localHead
             
             let lastPos = lastHeadWorldPosStorage.value
             let delta = simd_length(p - lastPos)
@@ -2193,26 +2125,22 @@ struct _RealityKitStreamView: View {
         
         if let inputEnt = attachments.entity(for: "inputOverlay") {
             if inputEnt.parent !== screen { screen.addChild(inputEnt) }
-            inputEnt.position = [0.0 as Float, 0.0 as Float, Float(0.01)]
+            inputEnt.position = [0.0 as Float, 0.0 as Float, INPUT_OVERLAY_Z]
             
             let bounds = inputEnt.visualBounds(relativeTo: screen)
             if bounds.extents.x > 0 && bounds.extents.y > 0 {
-                if showVirtualKeyboard || inputMode == .controller {
-                    let unscaledWidth = Float(bounds.extents.x) / max(inputEnt.scale.x, 0.0001)
-                    let unscaledHeight = Float(bounds.extents.y) / max(inputEnt.scale.y, 0.0001)
-                    
-                    let scaleX = (CURVED_MAX_WIDTH_METERS * 1.05) / unscaledWidth
-                    // Absolute mouse: extend the plane 1.5x past the top/bottom of the screen mesh so the
-                    // pointer can comfortably reach the host's edges (SwiftUIAbsoluteMouseTracker maps it back).
-                    // FPS mouse: match the screen exactly, keeping the toolbar above outside the plane so the
-                    // pointer stops at the screen edge instead of landing on it.
-                    let heightOverscale: Float = viewModel.streamSettings.fpsMouseCapture ? 1.0 : 1.5
-                    let scaleY = ((CURVED_MAX_WIDTH_METERS * Float(screenAspect)) * heightOverscale) / unscaledHeight
-                    
-                    inputEnt.scale = [scaleX, scaleY, scaleX]
-                } else {
-                    inputEnt.scale = .one
-                }
+                let unscaledWidth = Float(bounds.extents.x) / max(inputEnt.scale.x, 0.0001)
+                let unscaledHeight = Float(bounds.extents.y) / max(inputEnt.scale.y, 0.0001)
+                
+                let scaleX = (CURVED_MAX_WIDTH_METERS * INPUT_OVERLAY_WIDTH_SCALE) / unscaledWidth
+                // Absolute mouse: extend the plane past the top/bottom of the screen mesh so the pointer
+                // can comfortably reach the host's edges (SwiftUIAbsoluteMouseTracker maps it back).
+                // FPS mouse: match the screen exactly, keeping the toolbar above outside the plane so the
+                // pointer stops at the screen edge instead of landing on it.
+                let heightOverscale: Float = viewModel.streamSettings.fpsMouseCapture ? 1.0 : ABSOLUTE_MOUSE_OVERLAY_HEIGHT_SCALE
+                let scaleY = ((CURVED_MAX_WIDTH_METERS * Float(screenAspect)) * heightOverscale) / unscaledHeight
+                
+                inputEnt.scale = [scaleX, scaleY, scaleX]
             }
         }
         if let dimPickerEnt = attachments.entity(for: "dimPicker") {
@@ -2764,15 +2692,16 @@ struct _RealityKitStreamView: View {
         AudioHelpers.applySpatialAudioMode(currentMode)
     }
 
+    /// Disable screen collision when menus are showing OR when in Controller mode.
+    /// Controller buttons map to system gestures which hit CollisionComponent, and the curved screen
+    /// bows in front of the input overlay, so it would take the pointer away from it.
+    private var screenAcceptsInput: Bool {
+        !showMenuPanel && inputMode != .controller
+    }
+
     private func updateScreenInteractivity() {
         guard screen.parent != nil else { return }
-        // Disable screen collision when menus are showing OR when in Controller mode
-        // Controller buttons map to system gestures which hit CollisionComponent
-        let shouldDisableInteractions = showMenuPanel || inputMode == .controller
-        if shouldDisableInteractions {
-            screen.components.remove(CollisionComponent.self)
-            screen.components.remove(InputTargetComponent.self)
-        } else {
+        if screenAcceptsInput {
             // Generate curved collision mesh for accurate gaze hit detection
             if let collisionMesh = try? generateCurvedRoundedPlane(
                 width: CURVED_MAX_WIDTH_METERS,
@@ -2781,21 +2710,12 @@ struct _RealityKitStreamView: View {
                 curveMagnitude: effectiveCurvature,
                 cornerRadiusFraction: 0
             ) {
-                Task {
-                    if let collisionShape = try? await ShapeResource.generateStaticMesh(from: collisionMesh) {
-                        await MainActor.run {
-                            screen.components.set(CollisionComponent(
-                                shapes: [collisionShape],
-                                filter: CollisionFilter(
-                                    group: .screenEntity,
-                                    mask: .all
-                                )
-                            ))
-                        }
-                    }
-                }
+                setScreenCollision(from: collisionMesh)
             }
             screen.components.set(InputTargetComponent(allowedInputTypes: .all))
+        } else {
+            screen.components.remove(CollisionComponent.self)
+            screen.components.remove(InputTargetComponent.self)
         }
         
         // Update Focus Catcher Entity
@@ -2808,6 +2728,24 @@ struct _RealityKitStreamView: View {
         }
     }
     
+    /// The only place the screen gains collision, so it never has any while it shouldn't accept input.
+    private func setScreenCollision(from mesh: MeshResource) {
+        Task {
+            guard let collisionShape = try? await ShapeResource.generateStaticMesh(from: mesh) else { return }
+            await MainActor.run {
+                // The input mode may have changed while the shape was generated.
+                guard screenAcceptsInput else { return }
+                screen.components.set(CollisionComponent(
+                    shapes: [collisionShape],
+                    filter: CollisionFilter(
+                        group: .screenEntity,
+                        mask: .all
+                    )
+                ))
+            }
+        }
+    }
+
     /// Drop large optional GPU resources when immersive session or app backgrounds.
     /// Studio USDZ is released via `ImmersiveEnvironment`; the reactive dimmer material is cleared here.
     private func releaseImmersiveHeavyCachesForBackground() {

@@ -17,6 +17,19 @@ let MAX_CURVE_ANGLE: Float = 1.3
 let CURVED_MAX_WIDTH_METERS: Float = MAX_WIDTH_METERS
 let CURVED_MAX_ANGLE: Float = MAX_CURVE_ANGLE
 
+/// Horizontal texture coordinate (0 = left edge, 1 = right edge) of the curved screen at `x` metres
+/// from its centre, seen straight on. Points beyond the screen's edges clamp to 0 or 1.
+func curvedScreenU(atX x: Float, curveMagnitude: Float) -> Float {
+    let width = CURVED_MAX_WIDTH_METERS
+    let angle = CURVED_MAX_ANGLE * max(0.0, min(curveMagnitude, 2.0))
+    guard angle >= 0.001 else { return max(0, min(1, x / width + 0.5)) }
+
+    let radius = width / angle
+    let halfChord = radius * sin(angle / 2.0)
+    let theta = asin(max(-halfChord, min(halfChord, x)) / radius)
+    return theta / angle + 0.5
+}
+
 func generateCurvedRoundedPlane(
     width: Float,
     aspectRatio: Float,

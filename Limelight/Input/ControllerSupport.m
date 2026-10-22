@@ -1118,8 +1118,6 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
 #endif
 }
 
-extern void UpdatePhysicalMouseActivityTime(void);
-
 -(void) registerMouseCallbacks:(GCMouse*) mouse API_AVAILABLE(ios(14.0)) {
     
     __weak typeof(self) weakSelf = self;
@@ -1129,7 +1127,6 @@ extern void UpdatePhysicalMouseActivityTime(void);
         if (!strongSelf) return;
 
         if (fabs(deltaX) > 0.01 || fabs(deltaY) > 0.01) {
-            UpdatePhysicalMouseActivityTime();
             dispatch_async(dispatch_get_main_queue(), ^{
                 [[NSNotificationCenter defaultCenter] postNotificationName:@"HardwareInputDetected" object:nil];
             });
@@ -1164,7 +1161,6 @@ extern void UpdatePhysicalMouseActivityTime(void);
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
 
-        UpdatePhysicalMouseActivityTime();
         dispatch_async(dispatch_get_main_queue(), ^{
             [[NSNotificationCenter defaultCenter] postNotificationName:@"HardwareInputDetected" object:nil];
         });
@@ -1181,7 +1177,6 @@ extern void UpdatePhysicalMouseActivityTime(void);
         
         NSLog(@"[ControllerSupport] Middle Click: %@", pressed ? @"DOWN" : @"UP");
         LiSendMouseButtonEvent(pressed ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, BUTTON_MIDDLE);
-        UpdatePhysicalMouseActivityTime();
         dispatch_async(dispatch_get_main_queue(), ^{
             [[NSNotificationCenter defaultCenter] postNotificationName:@"HardwareInputDetected" object:nil];
         });
@@ -1193,7 +1188,6 @@ extern void UpdatePhysicalMouseActivityTime(void);
         
         NSLog(@"[ControllerSupport] Right Click: %@", pressed ? @"DOWN" : @"UP");
         LiSendMouseButtonEvent(pressed ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, BUTTON_RIGHT);
-        UpdatePhysicalMouseActivityTime();
         dispatch_async(dispatch_get_main_queue(), ^{
             [[NSNotificationCenter defaultCenter] postNotificationName:@"HardwareInputDetected" object:nil];
         });
@@ -1207,7 +1201,6 @@ extern void UpdatePhysicalMouseActivityTime(void);
                 
                 NSLog(@"[ControllerSupport] Aux1 Click: %@", pressed ? @"DOWN" : @"UP");
                 LiSendMouseButtonEvent(pressed ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, BUTTON_X1);
-                UpdatePhysicalMouseActivityTime();
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [[NSNotificationCenter defaultCenter] postNotificationName:@"HardwareInputDetected" object:nil];
                 });
@@ -1220,7 +1213,6 @@ extern void UpdatePhysicalMouseActivityTime(void);
                 
                 NSLog(@"[ControllerSupport] Aux2 Click: %@", pressed ? @"DOWN" : @"UP");
                 LiSendMouseButtonEvent(pressed ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, BUTTON_X2);
-                UpdatePhysicalMouseActivityTime();
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [[NSNotificationCenter defaultCenter] postNotificationName:@"HardwareInputDetected" object:nil];
                 });

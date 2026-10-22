@@ -25,10 +25,6 @@ final class ThreadSafeHDRSettings: @unchecked Sendable {
     }
 }
 
-class HeadPositionStorage {
-    var positionInScreenSpace: SIMD3<Float> = .zero
-}
-
 class SIMD3Storage {
     var value: SIMD3<Float> = .zero
 }
@@ -36,17 +32,6 @@ class SIMD3Storage {
 class MutableBox<T> {
     var value: T
     init(_ value: T) { self.value = value }
-}
-
-class GlobalInputState {
-    static let shared = GlobalInputState()
-    var activeTouchIsHand: Bool = false
-    var lastPhysicalMouseActivityTime: TimeInterval = 0
-}
-
-@_cdecl("UpdatePhysicalMouseActivityTime")
-func UpdatePhysicalMouseActivityTime() {
-    GlobalInputState.shared.lastPhysicalMouseActivityTime = CACurrentMediaTime()
 }
 
 enum InputMode: Int, CaseIterable {
@@ -89,19 +74,15 @@ struct InputCaptureView: UIViewControllerRepresentable {
     let controllerSupport: ControllerSupport
     @Binding var showKeyboard: Bool
     var isControllerMode: Bool  // True only when inputMode == .controller
-    var curvature: Float
     var streamConfig: StreamConfiguration
-    let headStorage: HeadPositionStorage
     var fpsMouseCapture: Bool
     
     func makeUIViewController(context: Context) -> InputCaptureViewController {
         let vc = InputCaptureViewController()
         let view = vc.captureView
-        view.curvature = curvature
         view.controllerSupport = controllerSupport
         controllerSupport.attachGCEventInteraction(to: view)
         view.streamConfig = streamConfig
-        view.headStorage = headStorage
         view.allowTouchPassthrough = !showKeyboard && !isControllerMode
         view.hidesPointer = isControllerMode
         
@@ -114,9 +95,7 @@ struct InputCaptureView: UIViewControllerRepresentable {
     
     func updateUIViewController(_ uiViewController: InputCaptureViewController, context: Context) {
         let view = uiViewController.captureView
-        view.curvature = curvature
         view.streamConfig = streamConfig
-        view.headStorage = headStorage
         view.allowTouchPassthrough = !showKeyboard && !isControllerMode
         view.showVirtualKeyboard = showKeyboard
         view.hidesPointer = isControllerMode
@@ -149,22 +128,29 @@ struct InputCaptureView: UIViewControllerRepresentable {
     }
 }
 
+// Sizing of the input overlay relative to the screen mesh. Wider than the screen so the pointer reaches the host's
+// left/right edges before it runs off the overlay; in absolute mode, taller too, mapped back by SwiftUIAbsoluteMouseTracker.
+let INPUT_OVERLAY_WIDTH_SCALE: Float = 1.05
+let ABSOLUTE_MOUSE_OVERLAY_HEIGHT_SCALE: Float = 1.5
+// Just behind the screen, which bows toward the viewer from z = 0. In controller mode the screen drops its collision,
+// so the pointer still lands on the overlay, and the opaque video covers the system pointer's dot, which visionOS
+// can draw despite the hidden pointer style.
+let INPUT_OVERLAY_Z: Float = -0.01
+
 struct SwiftUIAbsoluteMouseTracker: View {
     var controllerSupport: ControllerSupport?
     @Binding var showKeyboard: Bool
     var isControllerMode: Bool
     var curvature: Float
     var streamConfig: StreamConfiguration
-    var headStorage: HeadPositionStorage
     var fpsMouseCapture: Bool
     
-    @State private var longPressTimer: Timer?
     @State private var isDragging: Bool = false
+    @State private var reportedHandPinch: Bool = false
     
     private let BUTTON_ACTION_PRESS: Int8 = 0x07
     private let BUTTON_ACTION_RELEASE: Int8 = 0x08
     private let BUTTON_LEFT: Int32 = 0x01
-    private let BUTTON_RIGHT: Int32 = 0x03
     
     var body: some View {
         GeometryReader { geo in
@@ -172,62 +158,43 @@ struct SwiftUIAbsoluteMouseTracker: View {
                 controllerSupport: controllerSupport!,
                 showKeyboard: $showKeyboard,
                 isControllerMode: isControllerMode,
-                curvature: curvature,
                 streamConfig: streamConfig,
-                headStorage: headStorage,
                 fpsMouseCapture: fpsMouseCapture
             )
             .onContinuousHover(coordinateSpace: .local) { phase in
                 guard isControllerMode && !fpsMouseCapture else { return }
                 switch phase {
                 case .active(let location):
-                    GlobalInputState.shared.lastPhysicalMouseActivityTime = CACurrentMediaTime()
                     updateCursorFromSystemPointer(location: location, bounds: geo.size)
                 case .ended:
                     break
                 }
             }
             .simultaneousGesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                    .onChanged { value in
+                // Spatial events say what produced them, so a mouse click is never mistaken for a hand pinch.
+                SpatialEventGesture(coordinateSpace: .local)
+                    .onChanged { events in
                         guard isControllerMode && !fpsMouseCapture else { return }
-                        
-                        let now = CACurrentMediaTime()
-                        // If physical mouse hasn't moved or clicked in the last 0.5 seconds, it's a hand pinch!
-                        if now - GlobalInputState.shared.lastPhysicalMouseActivityTime > 0.5 {
-                            if !GlobalInputState.shared.activeTouchIsHand {
-                                GlobalInputState.shared.activeTouchIsHand = true
-                                NotificationCenter.default.post(name: Notification.Name("HandPinchDetected"), object: nil)
+                        for event in events {
+                            guard event.kind == .pointer else {
+                                // Looking and pinching at the stream hands input back to gaze control.
+                                if event.phase == .active && !reportedHandPinch {
+                                    reportedHandPinch = true
+                                    NotificationCenter.default.post(name: Notification.Name("HandPinchDetected"), object: nil)
+                                }
+                                continue
                             }
-                            return
-                        } else {
-                            GlobalInputState.shared.activeTouchIsHand = false
-                        }
-                        
-                        updateCursorFromSystemPointer(location: value.location, bounds: geo.size)
-                        
-                        if !isDragging {
-                            isDragging = true
-                            LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT)
-                            
-                            longPressTimer?.invalidate()
-                            longPressTimer = Timer.scheduledTimer(withTimeInterval: 0.650, repeats: false) { _ in
-                                // Right click emulation
-                                LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_LEFT)
-                                LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_RIGHT)
+                            if event.phase == .active {
+                                updateCursorFromSystemPointer(location: event.location, bounds: geo.size)
+                                pressLeftButton()
+                            } else {
+                                releaseLeftButton()
                             }
                         }
                     }
-                    .onEnded { value in
-                        if GlobalInputState.shared.activeTouchIsHand { return }
-                        if isDragging {
-                            isDragging = false
-                            longPressTimer?.invalidate()
-                            longPressTimer = nil
-                            
-                            LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_LEFT)
-                            LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_RIGHT)
-                        }
+                    .onEnded { _ in
+                        releaseLeftButton()
+                        reportedHandPinch = false
                     }
             )
             .onKeyPress(phases: [.down, .up, .repeat]) { press in
@@ -285,28 +252,36 @@ struct SwiftUIAbsoluteMouseTracker: View {
                 return .handled
             }
             .onDisappear {
-                longPressTimer?.invalidate()
-                longPressTimer = nil
                 isDragging = false
             }
         }
     }
     
+    // Only the left button comes through here; ControllerSupport's GCMouse handlers send the others.
+    private func pressLeftButton() {
+        guard !isDragging else { return }
+        isDragging = true
+        LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT)
+    }
+    
+    private func releaseLeftButton() {
+        guard isDragging else { return }
+        isDragging = false
+        LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_LEFT)
+    }
+    
     private func updateCursorFromSystemPointer(location: CGPoint, bounds: CGSize) {
-        // This must perfectly match the absolute-mouse sizing of the input overlay in RealityKitStreamView:
-        // CURVED_MAX_WIDTH_METERS * 1.05 wide, screen height * 1.5 tall
-        let overscaleX: CGFloat = 1.05
-        let overscaleY: CGFloat = 1.5
-        
-        let rawNormX = location.x / bounds.width
-        let rawNormY = location.y / bounds.height
-        
-        // Scale out from the exact center (0.5)
-        let correctedNormX = (rawNormX - 0.5) * overscaleX + 0.5
-        let correctedNormY = (rawNormY - 0.5) * overscaleY + 0.5
-        
-        var hostX = correctedNormX * CGFloat(streamConfig.width)
-        var hostY = correctedNormY * CGFloat(streamConfig.height)
+        let rawNormX = Float(location.x / bounds.width)
+        let rawNormY = Float(location.y / bounds.height)
+
+        // The overlay is flat but the screen curves toward the viewer, so map the pointer to the screen point
+        // directly in front of it. Vertically the screen is straight; scale out from the centre.
+        let overlayX = (rawNormX - 0.5) * CURVED_MAX_WIDTH_METERS * INPUT_OVERLAY_WIDTH_SCALE
+        let correctedNormX = curvedScreenU(atX: overlayX, curveMagnitude: curvature)
+        let correctedNormY = (rawNormY - 0.5) * ABSOLUTE_MOUSE_OVERLAY_HEIGHT_SCALE + 0.5
+
+        var hostX = CGFloat(correctedNormX) * CGFloat(streamConfig.width)
+        var hostY = CGFloat(correctedNormY) * CGFloat(streamConfig.height)
         
         // Clamp to bounds to prevent host cursor from wrapping or snapping
         hostX = min(max(hostX, 0), CGFloat(streamConfig.width))
@@ -461,9 +436,7 @@ class InputCaptureViewController: UIViewController {
 
 class InputCaptureUIView: UIView, UIKeyInput, UIPointerInteractionDelegate {
     var controllerSupport: ControllerSupport?
-    var curvature: Float = 0.0
     var streamConfig: StreamConfiguration?
-    var headStorage: HeadPositionStorage?
     var allowTouchPassthrough: Bool = true
     var firstResponderCheckTimer: Timer?
     var showVirtualKeyboard: Bool = false {
@@ -484,8 +457,6 @@ class InputCaptureUIView: UIView, UIKeyInput, UIPointerInteractionDelegate {
             }
         }
     }
-    
-    private let maxCurveAngle: Float = 1.3
     
     // Suppress software keyboard if showVirtualKeyboard is false, but still allow hardware input
     override var inputView: UIView? {
