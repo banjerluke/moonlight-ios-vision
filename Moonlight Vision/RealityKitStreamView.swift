@@ -1152,7 +1152,6 @@ struct _RealityKitStreamView: View {
         stopReactiveLerp()
         
         performCompleteTeardown(.windowClosed)
-        saveCurrentTransform()
     }
     
     // MARK: - onChange Handlers
@@ -2536,14 +2535,6 @@ struct _RealityKitStreamView: View {
         newPos.x = min(max(newPos.x, -allowedLateralMax), allowedLateralMax)
 
         screenPosition = newPos
-    }
-
-    private func saveCurrentTransform() {
-        var pos = screenPosition
-        let scale = screenScale
-        let packed = [pos.x, pos.y, pos.z]
-        UserDefaults.standard.set(packed, forKey: .legacyImmersivePosition)
-        UserDefaults.standard.set(scale, forKey: .legacyImmersiveScale)
     }
 
     private func restoreSavedTransform() {
