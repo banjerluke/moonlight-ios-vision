@@ -1121,7 +1121,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         var sampleBuffer: CMSampleBuffer?
         var sampleTiming = CMSampleTimingInfo(
             duration: CMTime.invalid,
-            presentationTimeStamp: CMTimeMake(value: Int64(decodeUnit.pointee.presentationTimeMs), timescale: 1000),
+            presentationTimeStamp: CMTimeMake(value: Int64(decodeUnit.pointee.presentationTimeUs), timescale: 1_000_000),
             decodeTimeStamp: CMTime.invalid
         )
         let statusSample = CMSampleBufferCreateReady(
@@ -1406,7 +1406,7 @@ let VIDEO_FORMAT_AV1_MAIN10: Int32 = 0x2000
 let VIDEO_FORMAT_MASK_H264: Int32 = 0x000F
 let VIDEO_FORMAT_MASK_H265: Int32 = 0x0F00
 let VIDEO_FORMAT_MASK_AV1: Int32 = 0xF000
-let VIDEO_FORMAT_MASK_10BIT: Int32 = 0x2200
+let VIDEO_FORMAT_MASK_10BIT: Int32 = 0xAA00
 
 let FRAME_TYPE_IDR = 0x01
 let BUFFER_TYPE_PICDATA = 0x00

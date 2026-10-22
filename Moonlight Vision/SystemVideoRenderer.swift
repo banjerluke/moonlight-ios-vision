@@ -184,7 +184,7 @@ final class SystemVideoRenderer: NSObject, AnyVideoDecoderRenderer {
         // sample, so playback also works if DisplayImmediately is not honored.
         if !timelineAnchored {
             timelineAnchored = true
-            synchronizer.setRate(1.0, time: CMTimeMake(value: Int64(decodeUnit.pointee.presentationTimeMs), timescale: 1000))
+            synchronizer.setRate(1.0, time: CMTimeMake(value: Int64(decodeUnit.pointee.presentationTimeUs), timescale: 1_000_000))
         }
 
         sampleRenderer.enqueue(sampleBuffer)
@@ -322,7 +322,7 @@ final class SystemVideoRenderer: NSObject, AnyVideoDecoderRenderer {
         var sampleBuffer: CMSampleBuffer?
         var sampleTiming = CMSampleTimingInfo(
             duration: .invalid,
-            presentationTimeStamp: CMTimeMake(value: Int64(decodeUnit.pointee.presentationTimeMs), timescale: 1000),
+            presentationTimeStamp: CMTimeMake(value: Int64(decodeUnit.pointee.presentationTimeUs), timescale: 1_000_000),
             decodeTimeStamp: .invalid
         )
         let status = CMSampleBufferCreateReady(
