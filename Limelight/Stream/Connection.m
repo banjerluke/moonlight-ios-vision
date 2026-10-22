@@ -11,6 +11,7 @@
 
 // 2. NOW include time.h to resolve the nanosleep error without breaking cwchar
 #include <time.h>
+#include <stdatomic.h>
 
 #import "Utils.h"
 
@@ -42,8 +43,9 @@
     char _rtspSessionUrl[128];
     id<ConnectionCallbacks> _instanceCallbacks;
     id<AnyVideoDecoderRenderer> _instanceRenderer;
-    // Set under initLock by terminate, so a main that runs afterwards doesn't start the connection.
-    BOOL _terminated;
+    // Set by terminate before it takes initLock, and checked by main under initLock, so a main
+    // that runs after terminate never starts the connection, even if terminate's lock wait timed out.
+    atomic_bool _terminated;
 }
 
 static NSLock* initLock;
@@ -513,6 +515,7 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
 
 -(void) terminateWithCompletion:(void (^)(void))completion
 {
+    atomic_store(&_terminated, true);
     LiInterruptConnection();
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
@@ -526,7 +529,6 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
             }
             return;
         }
-        self->_terminated = YES;
 
         dispatch_semaphore_t stopSem = dispatch_semaphore_create(0);
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -675,7 +677,7 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
 -(void) main
 {
     [initLock lock];
-    if (_terminated) {
+    if (atomic_load(&_terminated)) {
         Log(LOG_I, @"[Connection] Terminated before start; not starting the connection.");
         [initLock unlock];
         return;
