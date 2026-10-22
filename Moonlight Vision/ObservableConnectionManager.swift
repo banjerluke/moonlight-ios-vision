@@ -24,41 +24,41 @@ import Combine
     @Published var videoShown: Bool = false
     @Published var showAlert = false
 
-    func connectionStarted() {
+    nonisolated func connectionStarted() {
         print("Connection started")
     }
     
-    func stageStarting(_ stageName: UnsafePointer<CChar>!) {
+    nonisolated func stageStarting(_ stageName: UnsafePointer<CChar>!) {
         let stage = stageName.map { String(cString: $0) } ?? ""
         print("Stage starting: \(stage)")
         Task { @MainActor in self.currentStage = stage }
     }
     
-    func stageComplete(_ stageName: UnsafePointer<CChar>!) {
+    nonisolated func stageComplete(_ stageName: UnsafePointer<CChar>!) {
         let stage = stageName.map { String(cString: $0) } ?? ""
         print("Stage complete: \(stage)")
         Task { @MainActor in self.currentStage = stage }
     }
     
-    func connectionStatusUpdate(_ status: Int32) {
+    nonisolated func connectionStatusUpdate(_ status: Int32) {
         print("Connection status updated to: \(status)")
         Task { @MainActor in self.connectionStatus = status }
     }
     
-    func setHdrMode(_ enabled: Bool) {
+    nonisolated func setHdrMode(_ enabled: Bool) {
         print("HDR Mode set to: \(enabled)")
         Task { @MainActor in self.isHDRModeEnabled = enabled }
     }
     
-    func setMotionEventState(_ controllerNumber: UInt16, motionType: UInt8, reportRateHz: UInt16) {
+    nonisolated func setMotionEventState(_ controllerNumber: UInt16, motionType: UInt8, reportRateHz: UInt16) {
         print("Set motion event state: Controller \(controllerNumber), Motion type \(motionType), Report rate \(reportRateHz) Hz")
     }
     
-    func setControllerLed(_ controllerNumber: UInt16, r: UInt8, g: UInt8, b: UInt8) {
+    nonisolated func setControllerLed(_ controllerNumber: UInt16, r: UInt8, g: UInt8, b: UInt8) {
         print("Set LED for controller \(controllerNumber): R \(r), G \(g), B \(b)")
     }
     
-    func videoContentShown() {
+    nonisolated func videoContentShown() {
         print("Video content shown")
         Task { @MainActor in
             // DrawableVideoDecoder may call this on every IDR frame in error-recovery
