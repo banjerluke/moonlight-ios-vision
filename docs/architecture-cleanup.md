@@ -192,3 +192,8 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 ### Open questions for Luke (continued)
 - When the host ends the stream gracefully, should either renderer retry? Both do now.
 - Reactive V1/V2 never react, because there's no colour source. Fix them, or remove them?
+- Code review (two axes) found 2 confirmed bugs in the stop-timeout paths, a Home→Resume regression, and missing stale-callback guards; F fixed all of them, plus the cleanups and a narrower `StreamSessionEvents` port. A focused re-review of those fixes found the 45s connect timeout armed before the 60s `/launch` request; it was sent back to F.
+- Known and accepted for now:
+  - On iOS, a `terminate` whose `initLock` wait times out now waits indefinitely and then calls the global `LiStopConnection`. That can stop a newer connection; visionOS is safe because new attempts wait for `stopped`. The iOS target is already broken.
+  - A session blocked behind a stop that never finishes is never freed.
+  - A rare interrupt can be lost before `LiStartConnection`. This existed before the branch; stop still happens, just late.
