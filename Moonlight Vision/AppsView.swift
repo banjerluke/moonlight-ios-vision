@@ -181,10 +181,6 @@ struct AppsView: View {
     @MainActor
     private func stopStreamFromMainMenu() async {
         viewModel.userDidRequestDisconnect()
-        await viewModel.waitForTeardown(timeout: 1.2)
-        if viewModel.streamState != .idle {
-            viewModel.forceResetStreamLifecycleIfNeeded()
-        }
     }
 
     private func clearNowLoading() {

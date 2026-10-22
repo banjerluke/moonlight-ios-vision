@@ -101,20 +101,14 @@ struct MainContentView: View {
                         }
                         ToolbarItem(placement: .destructiveAction) {
                             Button(viewModel.localized("stop"), systemImage: "stop.circle.fill") {
-                                Task {
-                                    // Stops the session and sets shouldCloseStream; RealityKitStreamView
-                                    // dismisses itself via triggerCloseSequence. Avoid calling dismissWindow
-                                    // here for RealityKit volume streams: a second dismissWindow call racing
-                                    // with an in-flight window animation can cause intermittent crashes.
-                                    viewModel.userDidRequestDisconnect()
-                                    // The classic UIKit window is dismissed from here.
-                                    if viewModel.streamSettings.renderer == .classic {
-                                        dismissWindow(id: "classicStreamingWindow")
-                                    }
-                                    await viewModel.waitForTeardown(timeout: 1.2)
-                                    if viewModel.streamState != .idle {
-                                        viewModel.forceResetStreamLifecycleIfNeeded()
-                                    }
+                                // Stops the session and sets shouldCloseStream; RealityKitStreamView
+                                // dismisses itself via triggerCloseSequence. Avoid calling dismissWindow
+                                // here for RealityKit volume streams: a second dismissWindow call racing
+                                // with an in-flight window animation can cause intermittent crashes.
+                                viewModel.userDidRequestDisconnect()
+                                // The classic UIKit window is dismissed from here.
+                                if viewModel.streamSettings.renderer == .classic {
+                                    dismissWindow(id: "classicStreamingWindow")
                                 }
                             }
                         }
