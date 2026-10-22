@@ -19,6 +19,7 @@
 
 - (void)start;
 - (void)stop;
+- (void)cleanup;
 - (void *)getAudioBuffer:(int *)size;
 - (BOOL)submitAudio:(int)bytesWritten opusBytes:(int)opusBytes decodeStartTime:(CFTimeInterval)decodeStartTime;
 - (NSString *)getAudioStatsString;

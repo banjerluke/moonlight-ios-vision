@@ -63,7 +63,6 @@ static int audioFrameSize;
 static CoreAudioRenderer* audioRenderer;
 static OPUS_MULTISTREAM_CONFIGURATION visionOpusConfig;
 static OpusMSDecoder* visionOpusDecoder;
-static bool audioIsStopping;
 #endif // TARGET_OS_VISION
 
 // FIX 2: Define 'volume' so setVolume() compiles correctly
@@ -299,23 +298,15 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, v
 #endif // TARGET_OS_VISION
 }
 
-void ArStart(void) {
-#ifdef TARGET_OS_VISION
-    audioIsStopping = false;
-    [audioRenderer start];
-#endif // TARGET_OS_VISION
-}
-
-void ArStop(void) {
-#ifdef TARGET_OS_VISION
-    [audioRenderer stop];
-    audioIsStopping = true;
-#endif // TARGET_OS_VISION
-}
-
 void ArCleanup(void)
 {
 #ifdef TARGET_OS_VISION
+    // The library calls this after joining its audio threads. Stop the engine here
+    // so the renderer isn't released from inside its own render block; the app
+    // resets AVAudioSession once the stream has stopped.
+    [audioRenderer cleanup];
+    audioRenderer = nil;
+
     if (visionOpusDecoder != NULL) {
         opus_multistream_decoder_destroy(visionOpusDecoder);
         visionOpusDecoder = NULL;
@@ -350,8 +341,6 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
     int decodeLen;
     
 #ifdef TARGET_OS_VISION
-    if (audioIsStopping) return;
-
     CFTimeInterval decodeStartTime = CACurrentMediaTime();
 
     int desiredBufferSize;
