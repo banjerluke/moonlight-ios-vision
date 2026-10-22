@@ -414,38 +414,46 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
 #endif // TARGET_OS_VISION
 }
 
+// The Cl* callbacks capture _callbacks/renderer when the library fires them. By the
+// time the main-queue block runs, terminate may have cleared the globals or a newer
+// connection may have replaced them.
 void ClStageStarting(int stage)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks stageStarting:LiGetStageName(stage)];
+        [callbacks stageStarting:LiGetStageName(stage)];
     });
 }
 
 void ClStageComplete(int stage)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks stageComplete:LiGetStageName(stage)];
+        [callbacks stageComplete:LiGetStageName(stage)];
     });
 }
 
 void ClStageFailed(int stage, int errorCode)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks stageFailed:LiGetStageName(stage) withError:errorCode portTestFlags:LiGetPortFlagsFromStage(stage)];
+        [callbacks stageFailed:LiGetStageName(stage) withError:errorCode portTestFlags:LiGetPortFlagsFromStage(stage)];
     });
 }
 
 void ClConnectionStarted(void)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks connectionStarted];
+        [callbacks connectionStarted];
     });
 }
 
 void ClConnectionTerminated(int errorCode)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks connectionTerminated: errorCode];
+        [callbacks connectionTerminated: errorCode];
     });
 }
 
@@ -459,44 +467,51 @@ void ClLogMessage(const char* format, ...)
 
 void ClRumble(unsigned short controllerNumber, unsigned short lowFreqMotor, unsigned short highFreqMotor)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks rumble:controllerNumber lowFreqMotor:lowFreqMotor highFreqMotor:highFreqMotor];
+        [callbacks rumble:controllerNumber lowFreqMotor:lowFreqMotor highFreqMotor:highFreqMotor];
     });
 }
 
 void ClConnectionStatusUpdate(int status)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks connectionStatusUpdate:status];
+        [callbacks connectionStatusUpdate:status];
     });
 }
 
 void ClSetHdrMode(bool enabled)
 {
+    id<AnyVideoDecoderRenderer> currentRenderer = renderer;
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [renderer setHdrMode:enabled];
-        [_callbacks setHdrMode:enabled];
+        [currentRenderer setHdrMode:enabled];
+        [callbacks setHdrMode:enabled];
     });
 }
 
 void ClRumbleTriggers(uint16_t controllerNumber, uint16_t leftTriggerMotor, uint16_t rightTriggerMotor)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks rumbleTriggers:controllerNumber leftTrigger:leftTriggerMotor rightTrigger:rightTriggerMotor];
+        [callbacks rumbleTriggers:controllerNumber leftTrigger:leftTriggerMotor rightTrigger:rightTriggerMotor];
     });
 }
 
 void ClSetMotionEventState(uint16_t controllerNumber, uint8_t motionType, uint16_t reportRateHz)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks setMotionEventState:controllerNumber motionType:motionType reportRateHz:reportRateHz];
+        [callbacks setMotionEventState:controllerNumber motionType:motionType reportRateHz:reportRateHz];
     });
 }
 
 void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t b)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks setControllerLed:controllerNumber r:r g:g b:b];
+        [callbacks setControllerLed:controllerNumber r:r g:g b:b];
     });
 }
 
