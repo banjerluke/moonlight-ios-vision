@@ -146,6 +146,9 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
     }
     
     func userDidRequestDisconnect() {
+        // Capture the stream's own host before the resume config is cleared: app IDs like
+        // Sunshine's "Desktop" can repeat across hosts.
+        let streamConfig = activeSession?.config ?? savedStreamConfigForResume
         activelyStreaming = false
         // A stream the user stopped can't be resumed.
         savedStreamConfigForResume = nil
@@ -158,7 +161,8 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
         // Quit the app on the host too, including one left resumable by Home or a closed window.
         defer { currentlyStreamingAppId = nil }
         if let appId = currentlyStreamingAppId,
-           let host = hosts.first(where: { $0.appList.contains(where: { $0.id == appId || $0.name == appId }) }) {
+           let host = streamConfig.flatMap(host(for:))
+            ?? hosts.first(where: { $0.appList.contains(where: { $0.id == appId || $0.name == appId }) }) {
             let httpManager = HttpManager(host: host)
             let httpResponse = HttpResponse()
             let quitRequest = HttpRequest(for: httpResponse, with: httpManager?.newQuitAppRequest())
