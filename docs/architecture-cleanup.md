@@ -121,10 +121,10 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 
 | Ticket | Thread | Branch | State |
 |---|---|---|---|
-| A decoder | | | |
-| B lifecycle | | | |
-| C settings | | | |
-| D deletions | | | |
+| A decoder | @thread:thr_ewqb8v2dae | own worktree | running |
+| B lifecycle | @thread:thr_hewxt4aksp | own worktree | running |
+| C settings | @thread:thr_rtzxjcquha | own worktree | running |
+| D deletions | @thread:thr_978eyitr5x | bb/cleanup-d-dead-code-and-asset-deletions-thr_978eyitr5x | merged |
 | E+F StreamSession | | | waiting on wave 1 |
 | G shimmer | | | waiting on Luke |
 | Review | | | |
