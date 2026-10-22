@@ -842,8 +842,9 @@ struct _RealityKitStreamView: View {
                             print("[Keyboard] Submit detected, sending Return key and closing keyboard")
                             let hidReturn = Int16(bitPattern: 0x8000 | 0x0D)
                             LiSendKeyboardEvent(hidReturn, 0x03, 0)
-                            usleep(50 * 1000)
-                            LiSendKeyboardEvent(hidReturn, 0x04, 0)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                LiSendKeyboardEvent(hidReturn, 0x04, 0)
+                            }
                             showVirtualKeyboard = false
                             isKeyboardFocused = false
                             keyboardInput = ""

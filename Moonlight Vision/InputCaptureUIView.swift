@@ -567,8 +567,9 @@ class InputCaptureUIView: UIView, UIKeyInput {
     
     func deleteBackward() {
         LiSendKeyboardEvent(0x08, 0x03, 0)
-        usleep(50 * 1000)
-        LiSendKeyboardEvent(0x08, 0x04, 0)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            LiSendKeyboardEvent(0x08, 0x04, 0)
+        }
     }
     
     // Handle special keys like Return/Enter
