@@ -247,29 +247,10 @@ struct _RealityKitStreamView: View {
     
     @State private var dimmerDome: ModelEntity?
     @State private var dimmerDomePurple: ModelEntity?
-    @State private var purpleGradientTextureColors: TextureResource?
-    @State private var purpleGradientTexturePurpleBlack: TextureResource?
-    @State private var eclipseGradientTexture: TextureResource?
-    @State private var twilightGradientTexture: TextureResource?
-    @State private var dawnGradientTexture: TextureResource?
-    @State private var sunriseGradientTexture: TextureResource?
-    @State private var woodlandGradientTexture: TextureResource?
-    @State private var desertGradientTexture: TextureResource?
-    @State private var duskHDRTexture: TextureResource?
-    @State private var moonlightCycleTimer: Timer?
-    @State private var moonlightCyclePhase: CGFloat = 0.0
-    private let dimAlphas: [CGFloat] = [0.0, 0.82]
     @State private var dimLevel: Int = 0
     private let lastAppliedDimLevelBox = MutableBox(-1)
     @State private var environmentSphereLevel: Int = 0
     @State private var environmentUSDZLevel: Int = 0
-    @State private var moonlightMaterial: UnlitMaterial?
-    @State private var lastMoonlightAppliedRGB: SIMD3<Float> = .zero
-    @State private var lastMoonlightUpdateTime: CFTimeInterval = CACurrentMediaTime()
-    private let moonlightCycleDurationLowPower: CGFloat = 22.0
-    private let moonlightUpdateIntervalLowPower: TimeInterval = 0.22
-    private let moonlightColorDeltaThresholdLowPower: Float = 0.03
-    private let moonlightAlphaLowPower: CGFloat = 0.78
     
     @State private var lastEnvironmentSphereLevelApplied: Int = 0
     
@@ -309,7 +290,6 @@ struct _RealityKitStreamView: View {
     @State private var extraSkyboxNames: [String] = []
     /// In-flight skybox bundle scan — cancel before starting another to avoid duplicate GPU allocations.
     @State private var extraSkyboxLoadTask: Task<Void, Never>?
-    @State private var dimmerGradientPreloadTask: Task<Void, Never>?
     
     @State private var builtinSkyboxTextures: [String: TextureResource] = [:]
     @State private var envPresetSkyboxTextures: [String: TextureResource] = [:]
@@ -627,7 +607,6 @@ struct _RealityKitStreamView: View {
                 updateDimmerDomesState()
                 updateScreenMaterial()
                 if newValue {
-                    stopMoonlightCycle()
                     startReactiveLerp()
                 } else if dimLevel != 2 && dimLevel != 10 && dimLevel != 13 {
                     stopReactiveLerp()
@@ -1258,7 +1237,6 @@ struct _RealityKitStreamView: View {
     private func teardownScene() {
         statsTimer?.invalidate()
         statsTimer = nil
-        stopMoonlightCycle()
         stopReactiveLerp()
         
         if !hasPerformedTeardown {
@@ -1535,10 +1513,8 @@ struct _RealityKitStreamView: View {
                         
                         // Handle Reactive modes (V1, V2, and V3)
                         if val == 2 || val == 10 || val == 13 {
-                            stopMoonlightCycle()
                             startReactiveLerp()
                 } else {
-                            stopMoonlightCycle()
                             stopReactiveLerp()
                         }
                     }
@@ -2647,7 +2623,6 @@ struct _RealityKitStreamView: View {
         hintOverlayTimer?.invalidate()
         hintOverlayTimer = nil
         hideTimer?.invalidate()
-        moonlightCycleTimer?.invalidate()
         scaleHUDFadeTimer?.invalidate()
         environmentFadeTimer?.invalidate()
         reactiveLerpTimer?.invalidate()
@@ -2702,7 +2677,6 @@ struct _RealityKitStreamView: View {
         hintOverlayTimer?.invalidate()
         hintOverlayTimer = nil
         hideTimer?.invalidate()
-        moonlightCycleTimer?.invalidate()
         scaleHUDFadeTimer?.invalidate()
         environmentFadeTimer?.invalidate()
         reactiveLerpTimer?.invalidate()
@@ -2981,90 +2955,6 @@ struct _RealityKitStreamView: View {
         return nil
     }
 
-    private func getDimmerMaterial() -> (RealityKit.Material, TextureResource?) {
-        if dimLevel == 11 {
-            if let cached = moonlightMaterial {
-                return (cached, nil)
-            } else {
-                let initial = getMoonlightCycleColor(phase: moonlightCyclePhase).withAlphaComponent(moonlightAlphaLowPower)
-                var mat = moonlightMaterial ?? UnlitMaterial(color: initial)
-                mat.blending = .transparent(opacity: 1.0)
-                moonlightMaterial = mat
-                return (mat, nil)
-            }
-        }
-
-        if dimLevel == 2 {
-            // Reactive V1 - Keeps transparency (0.85), so keep .transparent
-            var mat = UnlitMaterial(color: currentAmbientColor.withAlphaComponent(0.85))
-            mat.blending = .transparent(opacity: 1.0)
-            return (mat, nil)
-        }
-
-        if dimLevel == 10 {
-            // Reactive V2 - SOLID COLOR (reactive)
-            // Use .opaque for proper Z-sorting so UI icons render on top
-            var mat = UnlitMaterial(color: currentAmbientColor.withAlphaComponent(1.0))
-            mat.blending = .opaque
-            return (mat, nil)
-        }
-        
-        if dimLevel == 12 {
-            // Starfield - Pure black background
-            var mat = UnlitMaterial(color: .black)
-            mat.blending = .opaque
-            return (mat, nil)
-        }
-
-        let selectedTex: TextureResource?
-        switch dimLevel {
-        case 4: selectedTex = eclipseGradientTexture
-        case 5: selectedTex = purpleGradientTexturePurpleBlack
-        case 6: selectedTex = twilightGradientTexture
-        case 7: selectedTex = dawnGradientTexture
-        case 8: selectedTex = sunriseGradientTexture
-        case 9: selectedTex = woodlandGradientTexture
-        case 14: selectedTex = desertGradientTexture
-        default: selectedTex = purpleGradientTextureColors
-        }
-
-        let mat: RealityKit.Material
-        if let tex = selectedTex {
-            var unlitMat = UnlitMaterial(texture: tex)
-
-            // Eclipse (Level 4) is SOLID black - use .opaque for proper Z-sorting
-            if dimLevel == 4 {
-                unlitMat.color.tint = .white
-                unlitMat.blending = .opaque
-        } else {
-                // All other gradients are semi-transparent
-                let tintAlpha: CGFloat = {
-                    switch dimLevel {
-                    case 5: return 0.95
-                    case 6, 7, 8, 9, 14: return 0.90
-                    default: return 0.5
-                    }
-                }()
-                unlitMat.color.tint = UIColor.white.withAlphaComponent(tintAlpha)
-                unlitMat.blending = .transparent(opacity: 1.0)
-            }
-            mat = unlitMat
-        } else {
-            var fallback = UnlitMaterial(color: .purple)
-            let fallbackAlpha: CGFloat = {
-                switch dimLevel {
-                case 4, 5: return 0.95
-                case 6, 7, 8, 9, 10: return 0.90
-                default: return 0.5
-                }
-            }()
-            fallback.color.tint = UIColor(red: 0.60, green: 0.40, blue: 0.90, alpha: fallbackAlpha)
-            fallback.blending = .transparent(opacity: 1.0)
-            mat = fallback
-        }
-        return (mat, selectedTex)
-    }
-
     private func updateDimmerDomesState() {
         dimmerDome?.isEnabled = (dimLevel > 0)
         dimmerDomePurple?.isEnabled = (dimLevel == 2 || dimLevel == 10 || viewModel.streamSettings.reactiveLightingEnabled)
@@ -3129,173 +3019,6 @@ struct _RealityKitStreamView: View {
         self.dimmerDomePurple = purpleDome
 
         updateDimmerDomesState()
-
-        dimmerGradientPreloadTask?.cancel()
-        dimmerGradientPreloadTask = Task {
-            purpleGradientTextureColors = try? await makeGradientTexture(size: 1024, gradient: .sunset)
-            purpleGradientTexturePurpleBlack = try? await makeGradientTexture(size: 1024, gradient: .midnight)
-            eclipseGradientTexture = try? await makeGradientTexture(size: 1024, gradient: .eclipse)
-            twilightGradientTexture = try? await makeGradientTexture(size: 1024, gradient: .twilight)
-            dawnGradientTexture = try? await makeGradientTexture(size: 1024, gradient: .dawn)
-            sunriseGradientTexture = try? await makeGradientTexture(size: 1024, gradient: .sunrise)
-            woodlandGradientTexture = try? await makeGradientTexture(size: 1024, gradient: .woodland)
-            desertGradientTexture = try? await makeGradientTexture(size: 1024, gradient: .desert)
-            duskHDRTexture = try? await TextureResource(named: "dusk")
-            await MainActor.run { self.dimmerGradientPreloadTask = nil }
-        }
-    }
-
-    // MARK: - Gradient Presets and Generator for Dimming Textures
-    enum GradientPreset {
-        case sunset
-        case midnight
-        case eclipse
-        case twilight
-        case dawn
-        case sunrise
-        case woodland
-        case desert
-    }
-
-    func makeGradientTexture(size: Int, gradient: GradientPreset) async throws -> TextureResource? {
-        let s = max(size, 32)
-        let rect = CGRect(x: 0, y: 0, width: s, height: s)
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: s, height: s))
-
-        let img = renderer.image { ctx in
-            ctx.cgContext.setFillColor(UIColor.clear.cgColor)
-            ctx.cgContext.fill(rect)
-
-            let colors: [CGColor]
-            let locations: [CGFloat]
-
-            switch gradient {
-            case .sunset:
-                colors = [
-                    UIColor(red: 0.60, green: 0.40, blue: 0.90, alpha: 0.50).cgColor,
-                    UIColor(red: 0.95, green: 0.60, blue: 0.85, alpha: 0.45).cgColor,
-                    UIColor(red: 0.95, green: 0.45, blue: 0.60, alpha: 0.42).cgColor,
-                    UIColor(red: 0.976, green: 0.627, blue: 0.251, alpha: 0.38).cgColor
-                ]
-                locations = [0.0, 0.33, 0.65, 1.0]
-
-            case .midnight:
-                colors = [
-                    UIColor(red: 0.60, green: 0.40, blue: 0.90, alpha: 0.42).cgColor,
-                    UIColor(red: 0.60, green: 0.40, blue: 0.90, alpha: 0.30).cgColor,
-                    UIColor(red: 0.50, green: 0.30, blue: 0.75, alpha: 0.18).cgColor,
-                    UIColor.black.withAlphaComponent(0.84).cgColor,
-                    UIColor.black.withAlphaComponent(0.94).cgColor,
-                    UIColor.black.withAlphaComponent(1.00).cgColor
-                ]
-                locations = [0.00, 0.20, 0.35, 0.50, 0.80, 1.00]
-
-            case .eclipse:
-                colors = [
-                    UIColor.black.cgColor,
-                    UIColor.black.cgColor,
-                    UIColor.black.cgColor,
-                    UIColor.black.cgColor
-                ]
-                locations = [0.0, 0.30, 0.70, 1.0]
-
-            case .twilight:
-                colors = [
-                    UIColor(red: 0.25, green: 0.20, blue: 0.40, alpha: 0.70).cgColor,
-                    UIColor(red: 0.40, green: 0.25, blue: 0.50, alpha: 0.75).cgColor,
-                    UIColor(red: 0.20, green: 0.15, blue: 0.30, alpha: 0.82).cgColor,
-                    UIColor(red: 0.05, green: 0.03, blue: 0.10, alpha: 0.90).cgColor
-                ]
-                locations = [0.0, 0.35, 0.70, 1.0]
-
-            case .dawn:
-                colors = [
-                    UIColor(red: 0.95, green: 0.75, blue: 0.55, alpha: 0.45).cgColor,
-                    UIColor(red: 0.90, green: 0.60, blue: 0.70, alpha: 0.50).cgColor,
-                    UIColor(red: 0.60, green: 0.45, blue: 0.75, alpha: 0.60).cgColor,
-                    UIColor(red: 0.30, green: 0.25, blue: 0.45, alpha: 0.75).cgColor
-                ]
-                locations = [0.0, 0.30, 0.65, 1.0]
-
-            case .sunrise:
-                colors = [
-                    UIColor(red: 1.00, green: 0.85, blue: 0.40, alpha: 0.38).cgColor,
-                    UIColor(red: 0.98, green: 0.70, blue: 0.50, alpha: 0.42).cgColor,
-                    UIColor(red: 0.90, green: 0.50, blue: 0.60, alpha: 0.48).cgColor,
-                    UIColor(red: 0.70, green: 0.40, blue: 0.70, alpha: 0.55).cgColor
-                ]
-                locations = [0.0, 0.30, 0.65, 1.0]
-
-            case .woodland:
-                colors = [
-                    UIColor(red: 0.25, green: 0.45, blue: 0.22, alpha: 0.65).cgColor,
-                    UIColor(red: 0.18, green: 0.32, blue: 0.15, alpha: 0.75).cgColor,
-                    UIColor(red: 0.08, green: 0.18, blue: 0.06, alpha: 0.90).cgColor,
-                    UIColor(red: 0.04, green: 0.10, blue: 0.03, alpha: 0.98).cgColor
-                ]
-                locations = [0.0, 0.30, 0.60, 1.0]
-
-            case .desert:
-                colors = [
-                    UIColor(red: 0.95, green: 0.80, blue: 0.55, alpha: 0.60).cgColor,
-                    UIColor(red: 0.80, green: 0.60, blue: 0.40, alpha: 0.70).cgColor,
-                    UIColor(red: 0.35, green: 0.22, blue: 0.12, alpha: 0.90).cgColor,
-                    UIColor(red: 0.20, green: 0.12, blue: 0.06, alpha: 0.98).cgColor
-                ]
-                locations = [0.0, 0.25, 0.55, 1.0]
-            }
-
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-            if let cgGradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: locations) {
-                let startPoint = CGPoint(x: rect.midX, y: rect.minY)
-                let endPoint = CGPoint(x: rect.midX, y: rect.maxY)
-                ctx.cgContext.drawLinearGradient(
-                    cgGradient,
-                    start: startPoint,
-                    end: endPoint,
-                    options: [.drawsAfterEndLocation]
-                )
-            }
-        }
-
-        if let cg = img.cgImage {
-            return try TextureResource.generate(from: cg, options: .init(semantic: .color))
-        }
-        return nil
-    }
-
-    private func getMoonlightCycleColor(phase: CGFloat) -> UIColor {
-        let p = phase.truncatingRemainder(dividingBy: 1.0)
-        if p < 0.2 {
-            return interpolateColor(from: UIColor(red: 0.02, green: 0.02, blue: 0.05, alpha: 0.96), to: UIColor(red: 0.10, green: 0.06, blue: 0.16, alpha: 0.96), progress: p / 0.2)
-        } else if p < 0.4 {
-            return interpolateColor(from: UIColor(red: 0.10, green: 0.06, blue: 0.16, alpha: 0.96), to: UIColor(red: 0.08, green: 0.10, blue: 0.18, alpha: 0.96), progress: (p - 0.2) / 0.2)
-        } else if p < 0.6 {
-            return interpolateColor(from: UIColor(red: 0.08, green: 0.10, blue: 0.18, alpha: 0.96), to: UIColor(red: 0.20, green: 0.16, blue: 0.28, alpha: 0.96), progress: (p - 0.4) / 0.2)
-        } else if p < 0.8 {
-            return interpolateColor(from: UIColor(red: 0.20, green: 0.16, blue: 0.28, alpha: 0.96), to: UIColor(red: 0.22, green: 0.28, blue: 0.36, alpha: 0.96), progress: (p - 0.6) / 0.2)
-        } else {
-            return interpolateColor(from: UIColor(red: 0.22, green: 0.28, blue: 0.36, alpha: 0.96), to: UIColor(red: 0.02, green: 0.02, blue: 0.05, alpha: 0.96), progress: (p - 0.8) / 0.2)
-        }
-    }
-
-    private func interpolateColor(from: UIColor, to: UIColor, progress: CGFloat) -> UIColor {
-        var (r1, g1, b1, a1): (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0)
-        var (r2, g2, b2, a2): (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0)
-        from.getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
-        to.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
-        return UIColor(red: r1 + (r2 - r1) * progress, green: g1 + (g2 - g1) * progress, blue: b1 + (b2 - b1) * progress, alpha: a1 + (a2 - a1) * progress)
-    }
-    
-    private func rgb(_ color: UIColor) -> SIMD3<Float> {
-        var (r, g, b, a): (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0)
-        color.getRed(&r, green: &g, blue: &b, alpha: &a)
-        return SIMD3<Float>(Float(r), Float(g), Float(b))
-    }
-
-    private func colorDistance(_ a: SIMD3<Float>, _ b: SIMD3<Float>) -> Float {
-        let d = a - b
-        return simd_length(d)
     }
 
     private func setupEnvironment360(content: RealityViewContent) {
@@ -3487,12 +3210,6 @@ struct _RealityKitStreamView: View {
         }
     }
 
-    private func stopMoonlightCycle() {
-        moonlightCycleTimer?.invalidate()
-        moonlightCycleTimer = nil
-        moonlightMaterial = nil
-    }
-    
     // MARK: - Reactive Color Lerp
     
     private func startReactiveLerp() {
@@ -3673,23 +3390,12 @@ struct _RealityKitStreamView: View {
     private func releaseImmersiveHeavyCachesForBackground() {
         extraSkyboxLoadTask?.cancel()
         extraSkyboxLoadTask = nil
-        dimmerGradientPreloadTask?.cancel()
-        dimmerGradientPreloadTask = nil
 
         extraSkyboxTextures = []
         extraSkyboxNames = []
         builtinSkyboxTextures = [:]
         envPresetSkyboxTextures = [:]
 
-        purpleGradientTextureColors = nil
-        purpleGradientTexturePurpleBlack = nil
-        eclipseGradientTexture = nil
-        twilightGradientTexture = nil
-        dawnGradientTexture = nil
-        sunriseGradientTexture = nil
-        woodlandGradientTexture = nil
-        desertGradientTexture = nil
-        duskHDRTexture = nil
         jpgAboveTheCloudsTexture = nil
         jpgAnimeTexture = nil
         jpgJustSkyTexture = nil
@@ -3697,7 +3403,6 @@ struct _RealityKitStreamView: View {
         jpgTest1Texture = nil
         jpgTest2Texture = nil
         jpgTest3Texture = nil
-        moonlightMaterial = nil
         cachedReactiveMaterial = nil
         environmentFadeTimer?.invalidate()
 
