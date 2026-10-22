@@ -9,8 +9,8 @@
 
 import SwiftUI
 
-/// Starts streaming an app: waits out a stream that's still stopping, honours the reconnect
-/// cooldown, begins the session and opens the window or immersive space for the chosen renderer.
+/// Starts streaming an app: replaces whatever is streaming, begins the session and opens the
+/// window or immersive space for the chosen renderer.
 @MainActor
 struct StreamLauncher {
     let viewModel: MainViewModel
@@ -21,28 +21,10 @@ struct StreamLauncher {
 
     /// Returns once the stream's window or space has been asked to open, or the launch was skipped.
     func launch(_ app: TemporaryApp) async {
-        // If stale lifecycle state remains after crown/app interruptions, wait briefly and recover.
-        if viewModel.streamState != .idle {
-            await viewModel.waitForTeardown(timeout: 1.2)
-        }
+        // A launch replaces the current stream, if any: stop it and detach it. There's no need to
+        // wait here, because the new session's first connection waits for the old one to stop.
         if viewModel.streamState != .idle {
             viewModel.forceResetStreamLifecycleIfNeeded()
-        }
-        if viewModel.activelyStreaming {
-            return
-        }
-
-        let cooldown = viewModel.reconnectCooldownRemaining()
-        if cooldown > 0 {
-            try? await Task.sleep(nanoseconds: UInt64((cooldown + 0.05) * 1_000_000_000))
-            if viewModel.streamState != .idle {
-                await viewModel.waitForTeardown()
-            }
-        }
-
-        if let stale = _UIKitStreamView.controllerReference.object {
-            stale.stopStream()
-            _UIKitStreamView.controllerReference.object = nil
         }
 
         guard let config = viewModel.stream(app: app) else {

@@ -72,6 +72,9 @@
 "reconnecting" = "Reconnecting...";
 "reconnect_attempt" = "Attempt %d of %d";
 "previous_stream_still_stopping" = "The previous stream is still shutting down. Try again, or restart Moonlight if this keeps happening.";
+"connect_timed_out" = "The stream didn't start in time. Check that the host is awake and reachable, then try again.";
+"controller_setup_failed" = "Couldn't set up controller support for the stream.";
+"stream_create_failed" = "Couldn't create the stream.";
 "open_main_menu" = "Open Main Menu";
 "resume_stream" = "Resume";
 "stream_error" = "Stream error";

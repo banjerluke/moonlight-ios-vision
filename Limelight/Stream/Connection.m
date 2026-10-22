@@ -11,6 +11,7 @@
 
 // 2. NOW include time.h to resolve the nanosleep error without breaking cwchar
 #include <time.h>
+#include <stdatomic.h>
 
 #import "Utils.h"
 
@@ -42,8 +43,9 @@
     char _rtspSessionUrl[128];
     id<ConnectionCallbacks> _instanceCallbacks;
     id<AnyVideoDecoderRenderer> _instanceRenderer;
-    // Set under initLock by terminate, so a main that runs afterwards doesn't start the connection.
-    BOOL _terminated;
+    // Set by terminate before it takes initLock, and checked by main under initLock, so a main
+    // that runs after terminate never starts the connection, even if terminate's lock wait timed out.
+    atomic_bool _terminated;
 }
 
 static NSLock* initLock;
@@ -513,20 +515,32 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
 
 -(void) terminateWithCompletion:(void (^)(void))completion
 {
+    [self terminateWithCompletion:completion stopped:nil];
+}
+
+-(void) terminateWithCompletion:(void (^)(void))completion stopped:(void (^)(void))stopped
+{
+    atomic_store(&_terminated, true);
     LiInterruptConnection();
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10.0];
-        BOOL acquired = [initLock lockBeforeDate:deadline];
-
-        if (!acquired) {
-            Log(LOG_E, @"[Connection] terminateWithCompletion: initLock acquisition timed out after 10s.");
-            if (completion) {
-                dispatch_async(dispatch_get_main_queue(), ^{ completion(); });
+        __block void (^pendingCompletion)(void) = completion;
+        void (^letUIMoveOn)(void) = ^{
+            if (pendingCompletion) {
+                dispatch_async(dispatch_get_main_queue(), pendingCompletion);
+                pendingCompletion = nil;
             }
-            return;
+        };
+
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10.0];
+        if (![initLock lockBeforeDate:deadline]) {
+            // A connection is still starting under initLock. The interrupt above makes it give up;
+            // let the UI move on, but keep waiting so this connection really gets stopped.
+            Log(LOG_E, @"[Connection] terminate: initLock acquisition timed out after 10s; still waiting.");
+            letUIMoveOn();
+            [initLock lock];
+            Log(LOG_I, @"[Connection] terminate: acquired initLock after timeout.");
         }
-        self->_terminated = YES;
 
         dispatch_semaphore_t stopSem = dispatch_semaphore_create(0);
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -534,7 +548,6 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
             dispatch_semaphore_signal(stopSem);
         });
 
-        void (^pendingCompletion)(void) = completion;
         long result = dispatch_semaphore_wait(stopSem, dispatch_time(DISPATCH_TIME_NOW, 10LL * NSEC_PER_SEC));
         if (result != 0) {
             Log(LOG_E, @"[Connection] LiStopConnection() timed out after 10s.");
@@ -542,10 +555,7 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
 
             // Let the UI move on, but keep initLock held until LiStopConnection()
             // really returns so the next connection can't start on top of it.
-            if (pendingCompletion) {
-                dispatch_async(dispatch_get_main_queue(), pendingCompletion);
-                pendingCompletion = nil;
-            }
+            letUIMoveOn();
             dispatch_semaphore_wait(stopSem, DISPATCH_TIME_FOREVER);
             Log(LOG_I, @"[Connection] LiStopConnection() returned after timeout.");
         }
@@ -553,8 +563,9 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
         if (renderer == self->_instanceRenderer) renderer = nil;
         if (_callbacks == self->_instanceCallbacks) _callbacks = nil;
         [initLock unlock];
-        if (pendingCompletion) {
-            dispatch_async(dispatch_get_main_queue(), pendingCompletion);
+        letUIMoveOn();
+        if (stopped) {
+            dispatch_async(dispatch_get_main_queue(), stopped);
         }
     });
 }
@@ -675,7 +686,7 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
 -(void) main
 {
     [initLock lock];
-    if (_terminated) {
+    if (atomic_load(&_terminated)) {
         Log(LOG_I, @"[Connection] Terminated before start; not starting the connection.");
         [initLock unlock];
         return;

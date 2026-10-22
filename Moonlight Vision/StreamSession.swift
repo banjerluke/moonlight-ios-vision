@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import Synchronization
 
 /// Owns one stream's connection: the `StreamManager`, `ControllerSupport`, the IDR watchdog,
 /// reconnects, background suspend/resume and teardown. A stream view plugs in a `Port`
@@ -45,9 +46,7 @@ final class StreamSession: ObservableObject {
 
     /// What a stream view plugs in.
     struct Port {
-        /// Receives every connection callback except connectionTerminated, stageFailed and
-        /// launchFailed, which the session handles and reports through `phase`.
-        let callbacks: ConnectionCallbacks
+        let events: StreamSessionEvents
         let controllerDelegate: ControllerSupportDelegate
         /// Wait before each connection attempt, so the view and the host can settle.
         let startDelay: TimeInterval
@@ -61,9 +60,12 @@ final class StreamSession: ObservableObject {
     private static let reconnectDelay: TimeInterval = 2.5
     /// How long a stop may take before the UI moves on without it.
     private static let stopTimeout: TimeInterval = 5.0
-    /// How long a new attempt waits for the previous connection to finish stopping.
-    /// Connection.m gives up on initLock after 10s and on LiStopConnection after another 10s.
+    /// How long a new attempt waits for the previous connection to finish stopping before the
+    /// session gives up and tells the user. A healthy stop takes well under a second.
     private static let previousStopTimeout: TimeInterval = 20.0
+    /// How long an attempt may take to show its first frame (app launch, handshake and first IDR)
+    /// before it counts as failed.
+    private static let connectTimeout: TimeInterval = 45.0
 
     @Published private(set) var phase: Phase = .idle
     /// The current attempt's controller support; replaced on every reconnect.
@@ -80,7 +82,9 @@ final class StreamSession: ObservableObject {
     private var reconnectCount = 0
     /// Bumped whenever the current attempt is superseded, so callbacks and timers from an old one are dropped.
     private var generation = 0
+    private var attemptCallbacks: AttemptCallbacks?
     private var idrWatchdogs: [Timer] = []
+    private var connectWatchdog: Timer?
 
     // Process-wide: connections whose stop hasn't returned yet, and attempts waiting for them.
     private static var stopsInFlight = 0
@@ -126,7 +130,7 @@ final class StreamSession: ObservableObject {
             return
         }
         print("[StreamSession] Suspending")
-        generation += 1
+        supersedeAttempt()
         phase = .suspended
         reconnectCount = 0
         stopConnection(resetAudio: true, completion: {})
@@ -145,8 +149,16 @@ final class StreamSession: ObservableObject {
 
     // MARK: - Attempts
 
-    private func scheduleAttempt(after delay: TimeInterval) {
+    /// Drops everything the current attempt still has in flight: pending timers and closures check
+    /// `generation`, and its callbacks stop reaching the port.
+    private func supersedeAttempt() {
         generation += 1
+        attemptCallbacks?.supersede()
+        attemptCallbacks = nil
+    }
+
+    private func scheduleAttempt(after delay: TimeInterval) {
+        supersedeAttempt()
         let gen = generation
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, gen == self.generation else { return }
@@ -165,12 +177,13 @@ final class StreamSession: ObservableObject {
     private func launchAttempt() {
         guard let port else { return }
         guard let support = ControllerSupport(config: config, delegate: port.controllerDelegate) else {
-            teardown(ending: .startFailed(message: "Couldn't set up controller support"))
+            teardown(ending: .startFailed(message: MainViewModel.localizedStatic("controller_setup_failed")))
             return
         }
         let gen = generation
         controllerSupport = support
-        let callbacks = AttemptCallbacks(session: self, generation: gen, port: port.callbacks, controllerSupport: support)
+        let callbacks = AttemptCallbacks(session: self, generation: gen, port: port.events, controllerSupport: support)
+        attemptCallbacks = callbacks
         let makeRenderer = port.prepareAttempt(support, callbacks)
         guard let manager = StreamManager(
             config: config,
@@ -181,12 +194,25 @@ final class StreamSession: ObservableObject {
             },
             connectionCallbacks: callbacks
         ) else {
-            teardown(ending: .startFailed(message: "Couldn't create the stream"))
+            teardown(ending: .startFailed(message: MainViewModel.localizedStatic("stream_create_failed")))
             return
         }
         self.manager = manager
         managerQueue.addOperation(manager)
         armIdrWatchdog(generation: gen)
+        armConnectWatchdog(generation: gen)
+    }
+
+    /// Fail the attempt if it never shows a first frame, so `.connecting` can't hang.
+    private func armConnectWatchdog(generation gen: Int) {
+        connectWatchdog?.invalidate()
+        connectWatchdog = Timer.scheduledTimer(withTimeInterval: Self.connectTimeout, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, gen == self.generation else { return }
+                print("[StreamSession] No first frame after \(Self.connectTimeout)s")
+                self.connectionFailed(generation: gen, message: MainViewModel.localizedStatic("connect_timed_out"), afterStart: false)
+            }
+        }
     }
 
     /// Ask for an IDR frame if the first frame is slow to arrive.
@@ -214,6 +240,8 @@ final class StreamSession: ObservableObject {
         switch phase {
         case .connecting, .reconnecting:
             cancelIdrWatchdog()
+            connectWatchdog?.invalidate()
+            connectWatchdog = nil
             reconnectCount = 0
             phase = .running
         default:
@@ -237,7 +265,7 @@ final class StreamSession: ObservableObject {
 
     private func handleLostConnection(message: String) {
         // Supersede the failed attempt so its other callbacks are ignored.
-        generation += 1
+        supersedeAttempt()
         let gen = generation
         guard reconnectCount < Self.maxReconnectAttempts else {
             print("[StreamSession] Reconnect attempts exhausted")
@@ -283,7 +311,7 @@ final class StreamSession: ObservableObject {
     // MARK: - Teardown
 
     private func teardown(ending end: End) {
-        generation += 1
+        supersedeAttempt()
         phase = .stopping
         stopConnection(resetAudio: true) { [weak self] in
             self?.finish(end)
@@ -301,11 +329,13 @@ final class StreamSession: ObservableObject {
 
     /// Teardown order: render gate, timers and input, stop, wait, audio reset. `completion` runs
     /// on main once the stop returns or `stopTimeout` passes, whichever is first. The audio reset
-    /// and the next attempt always wait for the real stop.
+    /// and the next attempt always wait for the real stop, however long it takes.
     private func stopConnection(resetAudio: Bool, completion: @escaping () -> Void) {
-        (renderer as? DrawableVideoDecoder)?.isRenderingEnabled = false
+        renderer?.closeRenderGate?()
         renderer = nil
         cancelIdrWatchdog()
+        connectWatchdog?.invalidate()
+        connectWatchdog = nil
         controllerSupport?.cleanup()
         controllerSupport = nil
 
@@ -323,6 +353,9 @@ final class StreamSession: ObservableObject {
         }
         Self.stopsInFlight += 1
         manager.stopStream(completion: {
+            // The UI may move on; on a stuck stop this fires before the connection has stopped.
+            MainActor.assumeIsolated { complete() }
+        }, stopped: {
             MainActor.assumeIsolated {
                 print("[StreamSession] Connection stopped")
                 if resetAudio {
@@ -366,23 +399,62 @@ final class StreamSession: ObservableObject {
     }
 }
 
+extension StreamSession.Phase {
+    /// The reconnect attempt in progress (1...maxReconnectAttempts), or nil.
+    var reconnectAttempt: Int? {
+        if case .reconnecting(let attempt) = self { return attempt }
+        return nil
+    }
+
+    /// "Attempt n of m" while reconnecting, or nil.
+    var reconnectAttemptMessage: String? {
+        guard let reconnectAttempt else { return nil }
+        return String(format: MainViewModel.localizedStatic("reconnect_attempt"), reconnectAttempt, StreamSession.maxReconnectAttempts)
+    }
+}
+
+/// The connection events a stream view sees. The session handles connectionTerminated, stageFailed,
+/// launchFailed and rumble itself, and reports them through `phase`.
+protocol StreamSessionEvents: AnyObject {
+    func connectionStarted()
+    func stageStarting(_ stageName: UnsafePointer<CChar>!)
+    func stageComplete(_ stageName: UnsafePointer<CChar>!)
+    func connectionStatusUpdate(_ status: Int32)
+    func setHdrMode(_ enabled: Bool)
+    func setMotionEventState(_ controllerNumber: UInt16, motionType: UInt8, reportRateHz: UInt16)
+    func setControllerLed(_ controllerNumber: UInt16, r: UInt8, g: UInt8, b: UInt8)
+    func videoContentShown()
+}
+
 /// One attempt's ConnectionCallbacks. Failures and the first frame go to the session, tagged with
-/// the attempt's generation so a superseded StreamManager can't affect the current one; everything
-/// else passes through to the port.
+/// the attempt's generation; everything else passes through to the port. Once the session
+/// supersedes the attempt, nothing reaches the port or the session any more, so a stale
+/// StreamManager can't affect the current one.
 private final class AttemptCallbacks: NSObject, ConnectionCallbacks {
     private weak var session: StreamSession?
     private let generation: Int
-    private let port: ConnectionCallbacks
+    private let port: StreamSessionEvents
     private weak var controllerSupport: ControllerSupport?
+    /// Callbacks arrive on main, the VT thread and the connection threads, so this is atomic.
+    private let isCurrent = Atomic<Bool>(true)
 
-    init(session: StreamSession, generation: Int, port: ConnectionCallbacks, controllerSupport: ControllerSupport) {
+    init(session: StreamSession, generation: Int, port: StreamSessionEvents, controllerSupport: ControllerSupport) {
         self.session = session
         self.generation = generation
         self.port = port
         self.controllerSupport = controllerSupport
     }
 
+    func supersede() {
+        isCurrent.store(false, ordering: .releasing)
+    }
+
+    private var current: Bool {
+        isCurrent.load(ordering: .acquiring)
+    }
+
     private func toSession(_ body: @escaping @MainActor (StreamSession) -> Void) {
+        guard current else { return }
         Task { @MainActor [weak session] in
             guard let session else { return }
             body(session)
@@ -390,6 +462,7 @@ private final class AttemptCallbacks: NSObject, ConnectionCallbacks {
     }
 
     func connectionStarted() {
+        guard current else { return }
         port.connectionStarted()
     }
 
@@ -400,10 +473,12 @@ private final class AttemptCallbacks: NSObject, ConnectionCallbacks {
     }
 
     func stageStarting(_ stageName: UnsafePointer<CChar>!) {
+        guard current else { return }
         port.stageStarting(stageName)
     }
 
     func stageComplete(_ stageName: UnsafePointer<CChar>!) {
+        guard current else { return }
         port.stageComplete(stageName)
     }
 
@@ -428,30 +503,37 @@ private final class AttemptCallbacks: NSObject, ConnectionCallbacks {
     }
 
     func rumble(_ controllerNumber: UInt16, lowFreqMotor: UInt16, highFreqMotor: UInt16) {
+        guard current else { return }
         controllerSupport?.rumble(controllerNumber, lowFreqMotor: lowFreqMotor, highFreqMotor: highFreqMotor)
     }
 
     func rumbleTriggers(_ controllerNumber: UInt16, leftTrigger: UInt16, rightTrigger: UInt16) {
+        guard current else { return }
         controllerSupport?.rumbleTriggers(controllerNumber, leftTrigger: leftTrigger, rightTrigger: rightTrigger)
     }
 
     func connectionStatusUpdate(_ status: Int32) {
+        guard current else { return }
         port.connectionStatusUpdate(status)
     }
 
     func setHdrMode(_ enabled: Bool) {
+        guard current else { return }
         port.setHdrMode(enabled)
     }
 
     func setMotionEventState(_ controllerNumber: UInt16, motionType: UInt8, reportRateHz: UInt16) {
+        guard current else { return }
         port.setMotionEventState(controllerNumber, motionType: motionType, reportRateHz: reportRateHz)
     }
 
     func setControllerLed(_ controllerNumber: UInt16, r: UInt8, g: UInt8, b: UInt8) {
+        guard current else { return }
         port.setControllerLed(controllerNumber, r: r, g: g, b: b)
     }
 
     func videoContentShown() {
+        guard current else { return }
         port.videoContentShown()
         let gen = generation
         toSession { $0.firstFrameShown(generation: gen) }

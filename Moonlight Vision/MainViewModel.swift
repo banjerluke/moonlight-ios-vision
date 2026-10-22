@@ -71,7 +71,6 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
     }
     @Published var activeSessionToken: String = ""
     @Published var currentlyStreamingAppId: String? = nil
-    @Published var reconnectCooldownUntil: Date? = nil
     
     @Published var showLanguagePrompt = false
     @Published var streamSettings: TemporarySettings
@@ -84,6 +83,12 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
     
     // Store saved stream config for auto-resume on window reopen
     @Published var savedStreamConfigForResume: StreamConfiguration? = nil
+
+    /// A stream is running, or was left resumable by Home or a closed window; the main menu shows
+    /// Resume and Stop instead of the app list.
+    var streamInProgress: Bool {
+        activelyStreaming || savedStreamConfigForResume != nil
+    }
     
     // Flag to indicate if we are hiding the stream to resume later
     @Published var isHidingForResume: Bool = false
@@ -138,19 +143,20 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
         if activelyStreaming && streamState == .idle {
             activelyStreaming = false
         }
-        if let cooldown = reconnectCooldownUntil, cooldown.timeIntervalSinceNow <= 0 {
-            reconnectCooldownUntil = nil
-        }
     }
     
     func userDidRequestDisconnect() {
         activelyStreaming = false
-        guard let session = activeSession, session.isLive else { return }
-        // Stop now, before the caller dismisses any stream window. The stream views close
-        // themselves when they see shouldCloseStream.
-        session.stop(.user)
-        beginReconnectCooldown(1.5)
-        shouldCloseStream = true
+        // A stream the user stopped can't be resumed.
+        savedStreamConfigForResume = nil
+        if let session = activeSession, session.isLive {
+            // Stop now, before the caller dismisses any stream window. The stream views close
+            // themselves when they see shouldCloseStream.
+            session.stop(.user)
+            shouldCloseStream = true
+        }
+        // Quit the app on the host too, including one left resumable by Home or a closed window.
+        defer { currentlyStreamingAppId = nil }
         if let appId = currentlyStreamingAppId,
            let host = hosts.first(where: { $0.appList.contains(where: { $0.id == appId || $0.name == appId }) }) {
             let httpManager = HttpManager(host: host)
@@ -162,41 +168,6 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
         }
     }
     
-    func beginReconnectCooldown(_ seconds: TimeInterval = 1.0) {
-        reconnectCooldownUntil = Date().addingTimeInterval(seconds)
-    }
-
-    func reconnectCooldownRemaining() -> TimeInterval {
-        guard let until = reconnectCooldownUntil else { return 0 }
-        return max(0, until.timeIntervalSinceNow)
-    }
-    
-    func canReconnectNow() -> Bool {
-        reconnectCooldownRemaining() <= 0
-    }
-
-    /// Waits for a stopping session to end, or for `timeout`.
-    func waitForTeardown(timeout: TimeInterval = 1.5) async {
-        guard let session = activeSession, session.phase == .stopping else { return }
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            var finished = false
-            var observation: AnyCancellable?
-            let finish = {
-                guard !finished else { return }
-                finished = true
-                observation?.cancel()
-                cont.resume()
-            }
-            observation = session.$phase.sink { phase in
-                if case .ended = phase { finish() }
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
-                if !finished { print("[Lifecycle] Teardown wait timed out") }
-                finish()
-            }
-        }
-    }
-
     /// Fallback for cases where the stream view vanished (e.g. crown exit) without stopping its
     /// session, leaving lifecycle state stuck and blocking new launches.
     func forceResetStreamLifecycleIfNeeded() {
@@ -210,7 +181,6 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
         stuck?.stop(.user)
         shouldCloseStream = false
         currentlyStreamingAppId = nil
-        reconnectCooldownUntil = nil
         activelyStreaming = false
     }
 
@@ -606,9 +576,10 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
             } else {
                 savedStreamConfigForResume = session.config
             }
+        } else {
+            // Keep the app for a resumable stream, so Stop in the main menu can still quit it.
+            currentlyStreamingAppId = nil
         }
-        currentlyStreamingAppId = nil
-        reconnectCooldownUntil = nil
         activelyStreaming = false
     }
 

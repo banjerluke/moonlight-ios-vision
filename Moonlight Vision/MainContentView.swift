@@ -74,7 +74,7 @@ struct MainContentView: View {
                     .buttonStyle(.plain) // Remove button styling to make it look like text
                 }
                 .toolbar {
-                    if viewModel.activelyStreaming {
+                    if viewModel.streamInProgress {
                         ToolbarItem(placement: .cancellationAction) {
                             Button(viewModel.localized("resume_stream"), systemImage: "play.circle.fill") {
                                 // If the window is still open, this notification un-hides the controls
@@ -101,20 +101,14 @@ struct MainContentView: View {
                         }
                         ToolbarItem(placement: .destructiveAction) {
                             Button(viewModel.localized("stop"), systemImage: "stop.circle.fill") {
-                                Task {
-                                    // Stops the session and sets shouldCloseStream; RealityKitStreamView
-                                    // dismisses itself via triggerCloseSequence. Avoid calling dismissWindow
-                                    // here for RealityKit volume streams: a second dismissWindow call racing
-                                    // with an in-flight window animation can cause intermittent crashes.
-                                    viewModel.userDidRequestDisconnect()
-                                    // The classic UIKit window is dismissed from here.
-                                    if viewModel.streamSettings.renderer == .classic {
-                                        dismissWindow(id: "classicStreamingWindow")
-                                    }
-                                    await viewModel.waitForTeardown(timeout: 1.2)
-                                    if viewModel.streamState != .idle {
-                                        viewModel.forceResetStreamLifecycleIfNeeded()
-                                    }
+                                // Stops the session and sets shouldCloseStream; RealityKitStreamView
+                                // dismisses itself via triggerCloseSequence. Avoid calling dismissWindow
+                                // here for RealityKit volume streams: a second dismissWindow call racing
+                                // with an in-flight window animation can cause intermittent crashes.
+                                viewModel.userDidRequestDisconnect()
+                                // The classic UIKit window is dismissed from here.
+                                if viewModel.streamSettings.renderer == .classic {
+                                    dismissWindow(id: "classicStreamingWindow")
                                 }
                             }
                         }
@@ -188,7 +182,7 @@ struct MainContentView: View {
                 // when the view appears so the split view doesn't look empty.
                 if selectedHost == nil {
                     var hostToSelect: TemporaryHost?
-                    if viewModel.activelyStreaming {
+                    if viewModel.streamInProgress {
                         if let streamingIp = viewModel.currentStreamConfig.host ?? viewModel.savedStreamConfigForResume?.host {
                             hostToSelect = viewModel.hosts.first(where: { 
                                 $0.address == streamingIp || 

@@ -47,8 +47,7 @@ struct RealityKitStreamView: View {
                         set: { streamConfig = $0 }
                     ),
                     needsHdr: needsHdr,
-                    isImmersive: isImmersive,
-                    swapAction: { }
+                    isImmersive: isImmersive
                 )
                 // One view per session, so resuming with a new session starts it from onAppear.
                 .id(ObjectIdentifier(session))
@@ -130,7 +129,6 @@ struct _RealityKitStreamView: View {
     @Binding var streamConfig: StreamConfiguration
     var needsHdr: Bool
     var isImmersive: Bool
-    let swapAction: () -> Void
     
     // Volume window positioning (non-immersive only)
     @State private var volumeHeight: Float = 0
@@ -256,8 +254,6 @@ struct _RealityKitStreamView: View {
     
     @State private var isMenuOpen: Bool = false
     
-    @State private var isMenuOpen1: Bool = false
-    
     
 
     var isSBSVideo: Bool {
@@ -268,12 +264,10 @@ struct _RealityKitStreamView: View {
     @State private var postFirstFrameRebindTimer: Timer?
 
     private var controllerSupport: ControllerSupport? { session.controllerSupport }
-    private var firstFrameReceived: Bool { session.phase == .running }
-    private var reconnectAttempt: Int? {
-        if case .reconnecting(let attempt) = session.phase { return attempt }
-        return nil
-    }
-    private var isReconnecting: Bool { reconnectAttempt != nil }
+    /// The current connection is showing video: false while connecting, reconnecting or stopped.
+    /// The ambilight glow hides outside this, as it did before StreamSession, rather than holding a stale frame.
+    private var isShowingVideo: Bool { session.phase == .running }
+    private var isReconnecting: Bool { session.phase.reconnectAttempt != nil }
     /// After a lost connection the immersive space stays on mainContent with the error overlay;
     /// switching to the stopped overlay there dismisses or crashes the space.
     private var keepsContentAfterLostConnection: Bool {
@@ -535,7 +529,7 @@ struct _RealityKitStreamView: View {
                     stopReactiveLerp()
                 }
             }
-            .onChange(of: firstFrameReceived) { _, _ in 
+            .onChange(of: isShowingVideo) { _, _ in 
                 updateScreenMaterial() 
             }
             .onChange(of: viewModel.streamSettings.realitykitTextAntiShimmer) { _, _ in
@@ -608,7 +602,7 @@ struct _RealityKitStreamView: View {
             Text(viewModel.localized("reconnecting"))
                 .font(.headline)
                 .foregroundStyle(.white)
-            Text(String(format: viewModel.localized("reconnect_attempt"), reconnectAttempt ?? 0, StreamSession.maxReconnectAttempts))
+            Text(session.phase.reconnectAttemptMessage ?? "")
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.85))
         }
@@ -864,7 +858,7 @@ struct _RealityKitStreamView: View {
                         Text(viewModel.localized("reconnecting"))
                             .font(.subheadline)
                             .foregroundStyle(.white)
-                        Text(String(format: viewModel.localized("reconnect_attempt"), reconnectAttempt ?? 0, StreamSession.maxReconnectAttempts))
+                        Text(session.phase.reconnectAttemptMessage ?? "")
                             .font(.caption)
                             .foregroundStyle(.white.opacity(0.85))
                     }
@@ -905,7 +899,6 @@ struct _RealityKitStreamView: View {
             // Redirect to main menu and close self.
             openWindow(id: "mainView")
             Task { @MainActor in
-                viewModel.userDidRequestDisconnect()
                 await dismissImmersiveSpace()
                 if !isImmersive {
                     dismissWindow(id: "realitykitStreamingWindow")
@@ -1646,9 +1639,9 @@ struct _RealityKitStreamView: View {
             ambMat.blending = .transparent(opacity: 1.0)
             ambPlane.model?.materials = [ambMat]
             
-            let isAmbilightEnabled = viewModel.streamSettings.reactiveLightingEnabled && firstFrameReceived
+            let isAmbilightEnabled = viewModel.streamSettings.reactiveLightingEnabled && isShowingVideo
             ambPlane.components.set(OpacityComponent(opacity: isAmbilightEnabled ? 1.0 : 0.0))
-            print("[Ambilight] Material updated. Opacity: \(isAmbilightEnabled ? 1.0 : 0.0) (reactiveEnabled: \(viewModel.streamSettings.reactiveLightingEnabled), firstFrameReceived: \(firstFrameReceived)). Scale: \(ambPlane.scale.x)")
+            print("[Ambilight] Material updated. Opacity: \(isAmbilightEnabled ? 1.0 : 0.0) (reactiveEnabled: \(viewModel.streamSettings.reactiveLightingEnabled), isShowingVideo: \(isShowingVideo)). Scale: \(ambPlane.scale.x)")
         }
     }
     
@@ -2219,7 +2212,7 @@ struct _RealityKitStreamView: View {
     
     private func startSession() {
         session.start(port: StreamSession.Port(
-            callbacks: connectionCallbacks,
+            events: connectionCallbacks,
             controllerDelegate: DummyControllerDelegate(),
             startDelay: 1.5,
             prepareAttempt: { _, callbacks in prepareStreamAttempt(callbacks: callbacks) }
@@ -2456,8 +2449,7 @@ struct _RealityKitStreamView: View {
         updateDimmerDomesState()
     }
 
-    internal init(session: StreamSession, streamConfig: Binding<StreamConfiguration>, needsHdr: Bool, isImmersive: Bool, swapAction: @escaping () -> Void) {
-        self.swapAction = swapAction
+    internal init(session: StreamSession, streamConfig: Binding<StreamConfiguration>, needsHdr: Bool, isImmersive: Bool) {
         self._streamConfig = streamConfig
         self.needsHdr = needsHdr
         self.isImmersive = isImmersive

@@ -38,11 +38,6 @@ struct UIKitStreamView: View {
         return session
     }
 
-    private var reconnectAttempt: Int? {
-        if case .reconnecting(let attempt) = session?.phase { return attempt }
-        return nil
-    }
-
     var body: some View {
         Group {
             if viewModel.activelyStreaming,
@@ -59,7 +54,7 @@ struct UIKitStreamView: View {
                     )
                     .persistentSystemOverlays(viewModel.streamSettings.dimPassthrough ? .hidden : .automatic)
                     .overlay {
-                        if reconnectAttempt != nil {
+                        if session.phase.reconnectAttempt != nil {
                             uikitReconnectingOverlay
                         }
                         if showCenterHint {
@@ -294,7 +289,7 @@ struct UIKitStreamView: View {
             Text(viewModel.localized("reconnecting"))
                 .font(.headline)
                 .foregroundStyle(.white)
-            Text(String(format: viewModel.localized("reconnect_attempt"), reconnectAttempt ?? 0, StreamSession.maxReconnectAttempts))
+            Text(session?.phase.reconnectAttemptMessage ?? "")
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.85))
         }
@@ -555,7 +550,7 @@ struct _UIKitStreamView: UIViewControllerRepresentable {
     private static func sessionPort(for controller: StreamFrameViewController, session: StreamSession) -> StreamSession.Port {
         let config = session.config
         return StreamSession.Port(
-            callbacks: controller,
+            events: controller,
             controllerDelegate: SessionControllerDelegate(controller: controller) { [weak session] in
                 Task { @MainActor in session?.stop(.user) }
             },
@@ -574,6 +569,9 @@ struct _UIKitStreamView: UIViewControllerRepresentable {
         _UIKitStreamView.controllerReference.object = viewController
     }
 }
+
+// The controller already implements these as ConnectionCallbacks for the iOS path.
+extension StreamFrameViewController: StreamSessionEvents {}
 
 /// Forwards controller presence changes to the stream view controller, and turns the gamepad
 /// exit combo into a session stop so the window closes.

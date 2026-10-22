@@ -73,6 +73,9 @@
 "reconnecting" = "正在重连…";
 "reconnect_attempt" = "第 %d/%d 次尝试";
 "previous_stream_still_stopping" = "上一个串流仍在关闭。请重试；如果问题持续，请重启 Moonlight。";
+"connect_timed_out" = "串流未能及时启动。请确认主机已唤醒且可以访问，然后重试。";
+"controller_setup_failed" = "无法为串流设置控制器支持。";
+"stream_create_failed" = "无法创建串流。";
 "open_main_menu" = "打开主菜单";
 "resume_stream" = "返回串流";
 "stream_error" = "串流错误";

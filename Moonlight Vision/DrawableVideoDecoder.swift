@@ -140,6 +140,10 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         set { renderGate.store(newValue, ordering: .releasing) }
     }
 
+    func closeRenderGate() {
+        isRenderingEnabled = false
+    }
+
     lazy var mtlDevice: MTLDevice = {
         guard let device = MTLCreateSystemDefaultDevice() else {
             fatalError()

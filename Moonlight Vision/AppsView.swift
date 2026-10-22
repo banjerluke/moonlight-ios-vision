@@ -38,7 +38,7 @@ struct AppsView: View {
     
     var body: some View {
         Group {
-            if viewModel.activelyStreaming {
+            if viewModel.streamInProgress {
                 // When stream running in background, show Resume + Stop instead of app list
                 streamInProgressView
             } else {
@@ -59,7 +59,7 @@ struct AppsView: View {
         }
         .navigationTitle(host.name)
         .onAppear() {
-            guard !viewModel.activelyStreaming else { return }
+            guard !viewModel.streamInProgress else { return }
             Task { await viewModel.refreshAppsFor(host: host) }
         }
         .alert(viewModel.localized("close_previous_window"), isPresented: $viewModel.showClassicWindowCloseAlert) {
@@ -73,7 +73,7 @@ struct AppsView: View {
             Text(viewModel.localized("close_realitykit_window_message"))
         }
         .refreshable() {
-            guard !viewModel.activelyStreaming else { return }
+            guard !viewModel.streamInProgress else { return }
             await viewModel.refreshAppsFor(host: host)
         }
         .sheet(item: $streamModeOverlayApp) { app in
@@ -181,10 +181,6 @@ struct AppsView: View {
     @MainActor
     private func stopStreamFromMainMenu() async {
         viewModel.userDidRequestDisconnect()
-        await viewModel.waitForTeardown(timeout: 1.2)
-        if viewModel.streamState != .idle {
-            viewModel.forceResetStreamLifecycleIfNeeded()
-        }
     }
 
     private func clearNowLoading() {
