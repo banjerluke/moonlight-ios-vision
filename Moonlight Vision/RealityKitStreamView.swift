@@ -2212,7 +2212,7 @@ struct _RealityKitStreamView: View {
     
     private func startSession() {
         session.start(port: StreamSession.Port(
-            callbacks: connectionCallbacks,
+            events: connectionCallbacks,
             controllerDelegate: DummyControllerDelegate(),
             startDelay: 1.5,
             prepareAttempt: { _, callbacks in prepareStreamAttempt(callbacks: callbacks) }

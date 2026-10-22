@@ -14,7 +14,7 @@
 import Foundation
 import Combine
 @MainActor
-@objc class ObservableConnectionManager: NSObject, ObservableObject, ConnectionCallbacks {
+@objc class ObservableConnectionManager: NSObject, ObservableObject, StreamSessionEvents {
     
     // Published properties for SwiftUI to observe
     @Published var connectionStatus: Int32 = 0
@@ -24,13 +24,9 @@ import Combine
     @Published var videoShown: Bool = false
     @Published var showAlert = false
 
-    // Implement the protocol methods
     func connectionStarted() {
         print("Connection started")
     }
-    
-    // StreamSession handles connectionTerminated, stageFailed, launchFailed and rumble itself.
-    func connectionTerminated(_ errorCode: Int32) {}
     
     func stageStarting(_ stageName: UnsafePointer<CChar>!) {
         let stage = stageName.map { String(cString: $0) } ?? ""
@@ -44,12 +40,6 @@ import Combine
         Task { @MainActor in self.currentStage = stage }
     }
     
-    func stageFailed(_ stageName: UnsafePointer<CChar>!, withError errorCode: Int32, portTestFlags: Int32) {}
-    
-    func launchFailed(_ message: String!) {}
-    
-    func rumble(_ controllerNumber: UInt16, lowFreqMotor: UInt16, highFreqMotor: UInt16) {}
-    
     func connectionStatusUpdate(_ status: Int32) {
         print("Connection status updated to: \(status)")
         Task { @MainActor in self.connectionStatus = status }
@@ -59,8 +49,6 @@ import Combine
         print("HDR Mode set to: \(enabled)")
         Task { @MainActor in self.isHDRModeEnabled = enabled }
     }
-    
-    func rumbleTriggers(_ controllerNumber: UInt16, leftTrigger: UInt16, rightTrigger: UInt16) {}
     
     func setMotionEventState(_ controllerNumber: UInt16, motionType: UInt8, reportRateHz: UInt16) {
         print("Set motion event state: Controller \(controllerNumber), Motion type \(motionType), Report rate \(reportRateHz) Hz")

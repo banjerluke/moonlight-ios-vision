@@ -46,9 +46,7 @@ final class StreamSession: ObservableObject {
 
     /// What a stream view plugs in.
     struct Port {
-        /// Receives every connection callback except connectionTerminated, stageFailed and
-        /// launchFailed, which the session handles and reports through `phase`.
-        let callbacks: ConnectionCallbacks
+        let events: StreamSessionEvents
         let controllerDelegate: ControllerSupportDelegate
         /// Wait before each connection attempt, so the view and the host can settle.
         let startDelay: TimeInterval
@@ -184,7 +182,7 @@ final class StreamSession: ObservableObject {
         }
         let gen = generation
         controllerSupport = support
-        let callbacks = AttemptCallbacks(session: self, generation: gen, port: port.callbacks, controllerSupport: support)
+        let callbacks = AttemptCallbacks(session: self, generation: gen, port: port.events, controllerSupport: support)
         attemptCallbacks = callbacks
         let makeRenderer = port.prepareAttempt(support, callbacks)
         guard let manager = StreamManager(
@@ -415,6 +413,19 @@ extension StreamSession.Phase {
     }
 }
 
+/// The connection events a stream view sees. The session handles connectionTerminated, stageFailed,
+/// launchFailed and rumble itself, and reports them through `phase`.
+protocol StreamSessionEvents: AnyObject {
+    func connectionStarted()
+    func stageStarting(_ stageName: UnsafePointer<CChar>!)
+    func stageComplete(_ stageName: UnsafePointer<CChar>!)
+    func connectionStatusUpdate(_ status: Int32)
+    func setHdrMode(_ enabled: Bool)
+    func setMotionEventState(_ controllerNumber: UInt16, motionType: UInt8, reportRateHz: UInt16)
+    func setControllerLed(_ controllerNumber: UInt16, r: UInt8, g: UInt8, b: UInt8)
+    func videoContentShown()
+}
+
 /// One attempt's ConnectionCallbacks. Failures and the first frame go to the session, tagged with
 /// the attempt's generation; everything else passes through to the port. Once the session
 /// supersedes the attempt, nothing reaches the port or the session any more, so a stale
@@ -422,12 +433,12 @@ extension StreamSession.Phase {
 private final class AttemptCallbacks: NSObject, ConnectionCallbacks {
     private weak var session: StreamSession?
     private let generation: Int
-    private let port: ConnectionCallbacks
+    private let port: StreamSessionEvents
     private weak var controllerSupport: ControllerSupport?
     /// Callbacks arrive on main, the VT thread and the connection threads, so this is atomic.
     private let isCurrent = Atomic<Bool>(true)
 
-    init(session: StreamSession, generation: Int, port: ConnectionCallbacks, controllerSupport: ControllerSupport) {
+    init(session: StreamSession, generation: Int, port: StreamSessionEvents, controllerSupport: ControllerSupport) {
         self.session = session
         self.generation = generation
         self.port = port
