@@ -113,7 +113,7 @@ Owns `Moonlight.xcodeproj/project.pbxproj` (removals only), `moonlight-common/mo
    The ~26 stringly-typed lifecycle notifications should mostly disappear; remove the ones that do.
 
 ### G. Shimmer — needs Luke on device
-This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes change IDR and parameter-set behaviour. Before it starts we need a description: which renderer, codec, HDR or not, curved or flat, motion or static content. Leads so far: mipmaps generated on every frame, the drawable sampling setup, and earlier shimmer commits that mention avoiding `.shaderRead`.
+This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes change IDR and parameter-set behaviour. Luke's report: RealityKit renderer, HDR on, "Automatic" codec, curved screen. It shimmers on still content as the head moves, worst in peripheral vision. That points at under-filtered minification: `makeVideoUnlitMaterial` binds the mipmapped drawable with the default sampler, so there's no anisotropy. Started before wave 1 finished, since it doesn't touch the decoder.
 
 ### Final: `/code-review` of the integration branch against `vision-testflight`.
 
@@ -126,7 +126,7 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 | C settings | @thread:thr_rtzxjcquha | own worktree | running |
 | D deletions | @thread:thr_978eyitr5x | bb/cleanup-d-dead-code-and-asset-deletions-thr_978eyitr5x | merged |
 | E+F StreamSession | | | waiting on wave 1 |
-| G shimmer | | | waiting on Luke |
+| G shimmer | @thread:thr_c5z7nwws7h | own worktree | running (hypothesis: default sampler, no anisotropic filtering) |
 | Review | | | |
 
 ## Decisions and notes
