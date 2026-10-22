@@ -88,6 +88,7 @@
 		E77582CD2D53F3EB00948545 /* Shaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = E77582CC2D53F3E500948545 /* Shaders.metal */; };
 		E77582CF2D54020700948545 /* CVMetalHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = E77582CE2D54020300948545 /* CVMetalHelpers.swift */; };
 		E77582EB2D5550D500948545 /* AudioHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = E77582EA2D5550D200948545 /* AudioHelpers.swift */; };
+		5EB1A5E00000000000000002 /* FFmpegSwresampleStubs.c in Sources */ = {isa = PBXBuildFile; fileRef = 5EB1A5E00000000000000001 /* FFmpegSwresampleStubs.c */; };
 		F71801422B65483D00A9336B /* AppsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F71801412B65483D00A9336B /* AppsView.swift */; };
 		F71801442B654D9100A9336B /* TemporaryApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F71801432B654D9100A9336B /* TemporaryApp.swift */; };
 		F71801452B65583700A9336B /* TemporaryApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F71801432B654D9100A9336B /* TemporaryApp.swift */; };
@@ -401,6 +402,7 @@
 		E77582CC2D53F3E500948545 /* Shaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = Shaders.metal; sourceTree = "<group>"; };
 		E77582CE2D54020300948545 /* CVMetalHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CVMetalHelpers.swift; sourceTree = "<group>"; };
 		E77582EA2D5550D200948545 /* AudioHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioHelpers.swift; sourceTree = "<group>"; };
+		5EB1A5E00000000000000001 /* FFmpegSwresampleStubs.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = FFmpegSwresampleStubs.c; sourceTree = "<group>"; };
 		F1E2D3C4B5A6978869504132 /* StreamViewStubs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamViewStubs.swift; sourceTree = "<group>"; };
 		F71801412B65483D00A9336B /* AppsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppsView.swift; sourceTree = "<group>"; };
 		F71801432B654D9100A9336B /* TemporaryApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemporaryApp.swift; sourceTree = "<group>"; };
@@ -789,6 +791,7 @@
 				B10D61AE2D54D0F600550218 /* AppIntents */,
 				F71801412B65483D00A9336B /* AppsView.swift */,
 				E77582EA2D5550D200948545 /* AudioHelpers.swift */,
+				5EB1A5E00000000000000001 /* FFmpegSwresampleStubs.c */,
 				3E8100A52ED566510011CB9F /* AV1Helper.h */,
 				3E8100A62ED5666B0011CB9F /* AV1Helper.m */,
 				5924693D218D4AB18BB554DD /* AV1Parser.swift */,
@@ -1451,6 +1454,7 @@
 				04F5ECAF2EE37A7F009FF87D /* StandardControlPanelView.swift in Sources */,
 				04F5ECB12EE37A80009FF87D /* VolumeControlPanelView.swift in Sources */,
 				E77582EB2D5550D500948545 /* AudioHelpers.swift in Sources */,
+				5EB1A5E00000000000000002 /* FFmpegSwresampleStubs.c in Sources */,
 				F7A119162B5DDF73001E8686 /* AppAssetRetriever.m in Sources */,
 				F7A119172B5DDF73001E8686 /* WakeOnLanManager.m in Sources */,
 				B1EDB1352D4D95A700EB1839 /* StreamControls.swift in Sources */,
@@ -1728,7 +1732,11 @@
 				);
 				MARKETING_VERSION = 11.0.22;
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu99 gnu++11";
-				OTHER_LDFLAGS = "-Wl,-ld_classic";
+				OTHER_LDFLAGS = (
+					"-Wl,-ld_classic",
+					"-liconv",
+					"-lz",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.moonlight-stream-beta.Moonlight-Vision-luma";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE = "";
@@ -1787,7 +1795,11 @@
 				);
 				MARKETING_VERSION = 11.0.22;
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu99 gnu++11";
-				OTHER_LDFLAGS = "-Wl,-ld_classic";
+				OTHER_LDFLAGS = (
+					"-Wl,-ld_classic",
+					"-liconv",
+					"-lz",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.moonlight-stream-beta.Moonlight-Vision-luma";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE = "";
