@@ -227,6 +227,9 @@ struct _RealityKitStreamView: View {
     
     private let attachmentLayoutAspectBox = MutableBox<Float>(-1)
     private let attachmentLayoutFpsMouseBox = MutableBox<Bool?>(nil)
+    // The input overlay only has content once the session's ControllerSupport exists (after connect),
+    // so its scale has to be recomputed when that appears or is replaced on reconnect.
+    private let attachmentLayoutInputSupportBox = MutableBox<ObjectIdentifier?>(nil)
     
     // Stats attachment sizing in meters (fixed width target)
     @State private var statsScaleInitialized = false
@@ -2080,14 +2083,23 @@ struct _RealityKitStreamView: View {
             (attachments.entity(for: "keyboardTextField")?.parent !== screen) ||
             (attachments.entity(for: "reconnectingOverlay")?.parent !== screen) ||
             (attachments.entity(for: "immersiveErrorOverlay")?.parent !== screen)
+        let inputSupportID = controllerSupport.map(ObjectIdentifier.init)
         let needsAttachmentLayout =
             abs(attachmentLayoutAspectBox.value - screenAspect) > 0.001 || hasNewAttachmentEntity ||
-            attachmentLayoutFpsMouseBox.value != viewModel.streamSettings.fpsMouseCapture
+            attachmentLayoutFpsMouseBox.value != viewModel.streamSettings.fpsMouseCapture ||
+            attachmentLayoutInputSupportBox.value != inputSupportID
         
         if needsAttachmentLayout {
             layoutAttachments(attachments: attachments)
             attachmentLayoutAspectBox.value = screenAspect
             attachmentLayoutFpsMouseBox.value = viewModel.streamSettings.fpsMouseCapture
+            // Only count the overlay as laid out once it has measurable content; until then keep retrying.
+            if let inputEnt = attachments.entity(for: "inputOverlay"),
+               inputEnt.visualBounds(relativeTo: screen).extents.x > 0 {
+                attachmentLayoutInputSupportBox.value = inputSupportID
+            } else if inputSupportID == nil {
+                attachmentLayoutInputSupportBox.value = nil
+            }
         }
         
         // Lightweight per-frame: only update position-sensitive attachments
