@@ -47,8 +47,7 @@ struct RealityKitStreamView: View {
                         set: { streamConfig = $0 }
                     ),
                     needsHdr: needsHdr,
-                    isImmersive: isImmersive,
-                    swapAction: { }
+                    isImmersive: isImmersive
                 )
                 // One view per session, so resuming with a new session starts it from onAppear.
                 .id(ObjectIdentifier(session))
@@ -130,7 +129,6 @@ struct _RealityKitStreamView: View {
     @Binding var streamConfig: StreamConfiguration
     var needsHdr: Bool
     var isImmersive: Bool
-    let swapAction: () -> Void
     
     // Volume window positioning (non-immersive only)
     @State private var volumeHeight: Float = 0
@@ -255,8 +253,6 @@ struct _RealityKitStreamView: View {
     let brandViolet = Color(red: 0.85, green: 0.6, blue: 0.95)
     
     @State private var isMenuOpen: Bool = false
-    
-    @State private var isMenuOpen1: Bool = false
     
     
 
@@ -2455,8 +2451,7 @@ struct _RealityKitStreamView: View {
         updateDimmerDomesState()
     }
 
-    internal init(session: StreamSession, streamConfig: Binding<StreamConfiguration>, needsHdr: Bool, isImmersive: Bool, swapAction: @escaping () -> Void) {
-        self.swapAction = swapAction
+    internal init(session: StreamSession, streamConfig: Binding<StreamConfiguration>, needsHdr: Bool, isImmersive: Bool) {
         self._streamConfig = streamConfig
         self.needsHdr = needsHdr
         self.isImmersive = isImmersive
