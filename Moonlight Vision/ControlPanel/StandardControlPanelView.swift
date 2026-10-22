@@ -171,15 +171,15 @@ struct StandardControlPanelView: View {
                 .frame(width: 80, height: 80)
                 
                 // Audio Quality Mode
-                let mixedMode = controlState.preferUninterruptedAudio
+                let mixedMode = viewModel.streamSettings.preferUninterruptedAudio
                 ModernActionTile(
                     icon: mixedMode ? "exclamationmark.triangle" : "waveform",
                     title: mixedMode ? "Audio: Mixed Mode" : "Audio: High Quality",
                     isActive: mixedMode
                 ) {
                     withAnimation {
-                        controlState.preferUninterruptedAudio.toggle()
-                        UserDefaults.standard.set(controlState.preferUninterruptedAudio, forKey: "preferUninterruptedAudio")
+                        viewModel.streamSettings.preferUninterruptedAudio.toggle()
+                        viewModel.streamSettings.save()
                         if spatialAudioMode {
                             AudioHelpers.fixAudioForSurroundForCurrentWindow()
                         } else {
@@ -337,15 +337,15 @@ struct StandardControlPanelView: View {
                     }
                     
                     // Audio Quality Mode
-                    let mixedMode = controlState.preferUninterruptedAudio
+                    let mixedMode = viewModel.streamSettings.preferUninterruptedAudio
                     ModernActionTile(
                         icon: mixedMode ? "exclamationmark.triangle" : "waveform",
                         title: mixedMode ? "Audio: Mixed Mode" : "Audio: High Quality",
                         isActive: mixedMode
                     ) {
                         withAnimation {
-                            controlState.preferUninterruptedAudio.toggle()
-                            UserDefaults.standard.set(controlState.preferUninterruptedAudio, forKey: "preferUninterruptedAudio")
+                            viewModel.streamSettings.preferUninterruptedAudio.toggle()
+                            viewModel.streamSettings.save()
                             if spatialAudioMode {
                                 AudioHelpers.fixAudioForSurroundForCurrentWindow()
                             } else {
