@@ -63,6 +63,16 @@ let kCVImageBufferColorPrimaries_ITU_R_709_2 = "ITU_R_709_2" as CFString
 let kCVImageBufferColorPrimaries_SMPTE_C = "SMPTE_C" as CFString
 let kCVImageBufferYCbCrMatrix_ITU_R_709_2 = "ITU_R_709_2" as CFString
 
+/// A Bool written on the main thread and read per frame on the VT output thread.
+final class ThreadSafeFlag: Sendable {
+    private let storage: Atomic<Bool>
+    init(_ value: Bool) { storage = Atomic(value) }
+    var value: Bool {
+        get { storage.load(ordering: .relaxed) }
+        set { storage.store(newValue, ordering: .relaxed) }
+    }
+}
+
 // MARK: - VideoDecoderRenderer
 
 @objc
@@ -141,6 +151,8 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
 
     private var hdrEnabled: Bool
 
+    // The providers below are called per frame on the VT output thread, so they must not touch
+    // main-actor state; read from a thread-safe snapshot such as ThreadSafeFlag instead.
     private var enhancementsProvider: (() -> (Float, Float, Float))? = nil
     private var isVolumeModeProvider: (() -> Bool)? = nil
     private var enableAmbilightProvider: (() -> Bool)? = nil
