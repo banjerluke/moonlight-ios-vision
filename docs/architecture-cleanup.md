@@ -127,7 +127,7 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 | D deletions | @thread:thr_978eyitr5x | bb/cleanup-d-dead-code-and-asset-deletions-thr_978eyitr5x | merged |
 | E+F StreamSession | @thread:thr_f7mz2irbqy | bb/cleanup-e-f-realitykitstreamview-extractions-str-thr_f7mz2irbqy | merged |
 | G shimmer | @thread:thr_c5z7nwws7h | bb/cleanup-g-realitykit-shimmer-sampler-filtering-thr_c5z7nwws7h | merged (sampler + A follow-up `32eb221`, present via command buffer); needs Luke on device |
-| Review | orchestrator | — | running |
+| Review | orchestrator | — | done; fixes merged |
 
 ## Decisions and notes
 - No test target, because the simulator can't link and adding one now is YAGNI. The phase enum in F is the best candidate for the first real tests once the app links.
@@ -197,3 +197,30 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
   - On iOS, a `terminate` whose `initLock` wait times out now waits indefinitely and then calls the global `LiStopConnection`. That can stop a newer connection; visionOS is safe because new attempts wait for `stopped`. The iOS target is already broken.
   - A session blocked behind a stop that never finishes is never freed.
   - A rare interrupt can be lost before `LiStartConnection`. This existed before the branch; stop still happens, just late.
+
+## Device test pass (for Luke)
+
+Run these with each renderer: UIKit, RealityKit volume and RealityKit immersive.
+
+1. **Start:** launch a game. The stream should appear within about 3s, the main window should close, and stats should work. Try each codec you can force (H.264, HEVC SDR, HEVC HDR, AV1).
+2. **Stop from inside:** use the control-panel close. The menu shouldn't offer Resume. Relaunch straight away; it should connect, maybe a moment later. Also launch a *different* app while one is streaming: the old stream stops and the new one starts.
+3. **Stop from the main menu:** this should quit the game on the PC and return to the app list.
+4. **System close and Home:** close with the window X or the crown, then press Home in the panel. Each time the menu should show Resume and Stop. Resume restarts the stream; Stop quits the game on the PC.
+5. **Reconnect:** drop the PC's network for about 5s. You should see "Reconnecting, attempt n of 3", then the stream back. Repeat after a background/resume cycle.
+6. **Host offline:** with the network still off, an error should appear after about 3 attempts. If the host is unreachable at launch, the error appears within about 45s of the PC accepting the launch.
+7. **Background/resume:** headset off for about 10s, then back on. Video and audio should come back. Do it 3 times quickly.
+8. **App Intent:** run the Shortcut cold, and again while a stream is open (the old one should stop first). Then run it for a host with no address: it should show an error, not crash.
+9. **Switch renderers:** do stop → mode sheet → other renderer → relaunch three times. There should be no "previous stream is still stopping" error.
+10. **Audio:** stop and start several streams. Audio should play every time, other apps' audio should resume after a stop, and memory should stay flat.
+11. **Mid-stream IDR and HDR toggle:** toggle HDR on the host. You should get one IDR, no repeated IDRs and no colour change. Watch for a short hitch on IDRs.
+12. **Settings:**
+    - toggle the audio mode in the panel, change any setting, and relaunch; the mode should stick
+    - try each reset button; immersive should come back at 0.8× at (0, 1, -1.5)
+    - on a fresh install with HDR on, the RealityKit picture should look normal
+13. **Apps list:** remove an app and add another on the host, refresh, and relaunch. The list should be right.
+14. **Shimmer:**
+    - compare small static text against `e32aa65`
+    - set Settings → Text Anti-Shimmer to 0.5, then try 0.25 and 0.75
+    - try HDR off
+    - also check that ambilight still follows the content
+15. **Other UI:** the dimming picker shows Off, Night, Reactive V1, Eclipse and Reactive V2. The UIKit gamepad exit combo closes the window. Backspace and Return work on the virtual keyboard.
