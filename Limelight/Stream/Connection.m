@@ -42,6 +42,8 @@
     char _rtspSessionUrl[128];
     id<ConnectionCallbacks> _instanceCallbacks;
     id<AnyVideoDecoderRenderer> _instanceRenderer;
+    // Set under initLock by terminate, so a main that runs afterwards doesn't start the connection.
+    BOOL _terminated;
 }
 
 static NSLock* initLock;
@@ -524,6 +526,7 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
             }
             return;
         }
+        self->_terminated = YES;
 
         dispatch_semaphore_t stopSem = dispatch_semaphore_create(0);
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -672,6 +675,11 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
 -(void) main
 {
     [initLock lock];
+    if (_terminated) {
+        Log(LOG_I, @"[Connection] Terminated before start; not starting the connection.");
+        [initLock unlock];
+        return;
+    }
     
     // Assign static globals inside the lock to ensure they are not overwritten
     // before the old connection has fully finished its LiStopConnection teardown.
