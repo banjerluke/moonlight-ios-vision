@@ -771,21 +771,23 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
 
                 AudioHelpers.fixAudioForSurroundForCurrentWindow()
             } else {
+                free(dataPtr)
                 return DR_NEED_IDR
             }
         }
 
         guard let formatDesc = formatDesc else {
+            free(dataPtr)
             return DR_NEED_IDR
         }
 
+        // Takes ownership of dataPtr, including on failure.
         guard let sampleBuffer = createSampleBuffer(
             dataPtr: dataPtr,
             length: Int(length),
             formatDesc: formatDesc,
             decodeUnit: decodeUnit
         ) else {
-            free(dataPtr)
             return DR_NEED_IDR
         }
 
@@ -1013,6 +1015,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
             )
             if statusDataBlock != kCMBlockBufferNoErr {
                 print("CMBlockBufferCreateWithMemoryBlock failed: \(statusDataBlock)")
+                free(dataPtr)
                 return nil
             }
         }
@@ -1146,7 +1149,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                 pointer.advanced(by: offset + 3).pointee = UInt8((index.payloadSize) & 0xFF)
                 offset += 4
 
-                pointer.advanced(by: offset).update(from: bytes.advanced(by: index.payloadStartOffset), count: blockBufferSize - offset)
+                pointer.advanced(by: offset).update(from: bytes.advanced(by: index.payloadStartOffset), count: index.payloadSize)
                 offset += index.payloadSize
             }
         }
