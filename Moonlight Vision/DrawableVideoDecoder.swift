@@ -487,11 +487,13 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                 }
             }
             
-            ambDrawable.present()
+            commandBuffer.present(ambDrawable)
         }
 
+        // Present via the command buffer so RealityKit only sees the drawables once the GPU work
+        // above has completed; a bare present() hands over textures the GPU may still be writing.
+        commandBuffer.present(drawable)
         commandBuffer.commit()
-        drawable.present()
 
         if !firstFrameEmitted {
             firstFrameEmitted = true
