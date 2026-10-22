@@ -123,7 +123,7 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 |---|---|---|---|
 | A decoder | @thread:thr_ewqb8v2dae | bb/cleanup-a-decoder-correctness-thr_ewqb8v2dae | merged |
 | B lifecycle | @thread:thr_hewxt4aksp | bb/cleanup-b-connection-audio-lifecycle-fixes-thr_hewxt4aksp | merged |
-| C settings | @thread:thr_rtzxjcquha | own worktree | running |
+| C settings | @thread:thr_rtzxjcquha | bb/cleanup-c-settings-fixes-key-registry-thr_rtzxjcquha | merged |
 | D deletions | @thread:thr_978eyitr5x | bb/cleanup-d-dead-code-and-asset-deletions-thr_978eyitr5x | merged |
 | E+F StreamSession | | | waiting on wave 1 |
 | G shimmer | @thread:thr_c5z7nwws7h | own worktree | running (hypothesis: default sampler, no anisotropic filtering) |
@@ -145,3 +145,22 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 - **Out of scope for F, but needs its own on-device ticket:**
   - `OutputAU._isPlaying` is never set, because `-start` is never called. So route and configuration changes (e.g. connecting AirPods mid-stream) never reconnect the audio nodes.
   - visionOS `ObservableConnectionManager.setMotionEventState`/`setControllerLed` only print, so gyro and LED never reach `ControllerSupport`.
+- C: `SettingsKey` lives in `TemporarySettings.swift`, because a new file would have needed a pbxproj edit. One reset routine: `resetToDefaults(includingSystemSettings:)`. `StreamControlState` owns the immersive defaults. The tilt migration was skipped: old values never took effect, so there's nothing to migrate.
+
+### Inputs for F, collected from wave 1 (continued)
+- **Per-mode display values leak into global settings.** `restoreSavedTransform` copies volume/immersive gamma, saturation, brightness, curvature and dim into `streamSettings`, and `saveRealityKitSettings` then writes them to Core Data. Keep per-mode display params in their own object.
+- **`saveCurrentTransform()`** is called from `teardownScene` (~:1264). It still writes the legacy `immersive.pos`/`immersive.scale` and ignores `rememberStreamSettings`. Remove the call.
+- **Dead keys in `RealityKitStreamView`:**
+  - `immersiveInputMode`: written, never read
+  - `ambient.dimming.level`: written only
+  - `immersive.defaultControlMode`: read, never written
+- **Swift key literals left outside C's scope:**
+  - `AudioHelpers.swift:18`
+  - `InputCaptureUIView.swift:128,501`
+  - `UIKitStreamView.swift:483-484,692-693`
+  - `MainViewModel.swift:76`
+  - Move the ones in F's files onto `SettingsKey`.
+
+### Open questions for Luke
+- `dimPassthrough` defaults to `false` on a fresh install, but "reset all" sets it to `true`. Which is right? C kept `true` for reset.
+- The Core Data model still defaults `brightness`/`gamma`/`saturation` to 0.0. C works around it at load time. Do you want a `v1.11` model version with real defaults?
