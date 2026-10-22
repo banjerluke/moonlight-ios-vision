@@ -243,16 +243,12 @@ struct _RealityKitStreamView: View {
     @State private var gestureInitialScale: Float? = nil
     @State private var targetScale: Float = 0.8
     @State private var scaleHUDFadeTimer: Timer?
-    @State private var environmentFadeTimer: Timer?
     
     @State private var dimmerDome: ModelEntity?
     @State private var dimmerDomePurple: ModelEntity?
     @State private var dimLevel: Int = 0
     private let lastAppliedDimLevelBox = MutableBox(-1)
-    @State private var environmentSphereLevel: Int = 0
-    @State private var environmentUSDZLevel: Int = 0
     
-    @State private var lastEnvironmentSphereLevelApplied: Int = 0
     
     @State private var showInlineHint: Bool = false
     @State private var hintOverlayText: String = ""
@@ -274,26 +270,7 @@ struct _RealityKitStreamView: View {
     
     @State private var isMenuOpen1: Bool = false
     
-    @State private var environmentDome: ModelEntity?
-    @State private var usdzAboveTheClouds: Entity?
-    @State private var usdzAnime: Entity?
-    @State private var usdzJustSky: Entity?
-    @State private var usdzNightTime: Entity?
-    @State private var jpgAboveTheCloudsTexture: TextureResource?
-    @State private var jpgAnimeTexture: TextureResource?
-    @State private var jpgJustSkyTexture: TextureResource?
-    @State private var jpgNightTimeTexture: TextureResource?
-    @State private var jpgTest1Texture: TextureResource?
-    @State private var jpgTest2Texture: TextureResource?
-    @State private var jpgTest3Texture: TextureResource?
-    @State private var extraSkyboxTextures: [TextureResource] = []
-    @State private var extraSkyboxNames: [String] = []
-    /// In-flight skybox bundle scan — cancel before starting another to avoid duplicate GPU allocations.
-    @State private var extraSkyboxLoadTask: Task<Void, Never>?
     
-    @State private var builtinSkyboxTextures: [String: TextureResource] = [:]
-    @State private var envPresetSkyboxTextures: [String: TextureResource] = [:]
-    @State private var envPresetLevel: Int = 0
 
     var isSBSVideo: Bool {
         let ratio = Float(streamConfig.width) / Float(streamConfig.height)
@@ -393,9 +370,8 @@ struct _RealityKitStreamView: View {
             .onChange(of: scenePhase) { oldValue, newValue in
                 if newValue == .background {
                     if isImmersive {
-                        // Trim large GPU assets while the immersive space is not visible — Studio USDZ,
-                        // skybox JPEGs, and generated gradient textures otherwise stay resident across
-                        // many crown in/out cycles and virtual-scene toggles.
+                        // Trim large GPU assets while the immersive space is not visible — the Studio USDZ
+                        // otherwise stays resident across many crown in/out cycles and virtual-scene toggles.
                         releaseImmersiveHeavyCachesForBackground()
                     }
                     if viewModel.activelyStreaming, streamMan != nil {
@@ -837,7 +813,6 @@ struct _RealityKitStreamView: View {
         func makeRealityView(proxy: GeometryProxy3D) -> some View {
             RealityView { content, attachments in
             setupDimmerDomes(content: content)
-            setupEnvironment360(content: content)
                 setupRealityView(content: content, attachments: attachments)
             
            
@@ -845,7 +820,6 @@ struct _RealityKitStreamView: View {
             
             } update: { content, attachments in
             updateDimmerDomes(content: content)
-            updateEnvironment360(content: content)
             updateRealityView(content: content, attachments: attachments, proxy: proxy)
             } attachments: {
             Attachment(id: "controls") { screenDockBar }
@@ -956,7 +930,6 @@ struct _RealityKitStreamView: View {
                 }
             }
         }
-        .upperLimbVisibility(shouldHideHands ? .hidden : .automatic)
         // Unified drag handles both Screen Move and Gaze Drag to prevent conflicts
         // Magnify and drag run simultaneously to allow pinch-to-zoom
         .gesture(magnifyGesture.simultaneously(with: unifiedDragGesture))
@@ -1506,10 +1479,7 @@ struct _RealityKitStreamView: View {
                         viewModel.streamSettings.dimPassthrough = (val != 0)
                         UserDefaults.standard.set(val, forKey: "ambient.dimming.level")
                         
-                        // Don't enable dimmer if environment is active - let environment binding handle it after fade
-                        if environmentDome?.isEnabled != true {
-                            updateDimmerDomesState()
-                        }
+                        updateDimmerDomesState()
                         
                         // Handle Reactive modes (V1, V2, and V3)
                         if val == 2 || val == 10 || val == 13 {
@@ -1519,35 +1489,7 @@ struct _RealityKitStreamView: View {
                         }
                     }
                 ),
-                isPresented: $showDimmingPicker,
-                environmentSphereLevel: Binding(
-                    get: { environmentSphereLevel },
-                    set: { newValue in
-                        environmentSphereLevel = newValue
-                        
-                        // If disabling environment while dimming is active, wait for fade before enabling dimmer
-                        if newValue == 0 && dimLevel != 0 {
-                            updateEnvironmentState()
-                            
-                            // Wait for environment fade to complete (0.5s + small buffer)
-                            Task {
-                                try? await Task.sleep(for: .milliseconds(600))
-                                await MainActor.run {
-                                    updateDimmerDomesState()
-                    }
-                }
-            } else {
-                            updateEnvironmentState()
-                        }
-                    }
-                ),
-                envPresetLevel: Binding(
-                    get: { envPresetLevel },
-                    set: { newValue in
-                        envPresetLevel = newValue
-                        updateEnvPresetState()
-                    }
-                )
+                isPresented: $showDimmingPicker
             )
             .environmentObject(viewModel)
         } else {
@@ -1704,13 +1646,6 @@ struct _RealityKitStreamView: View {
         }
     }
     
-    private var shouldHideHands: Bool {
-        environmentSphereLevel > 0 && viewModel.streamSettings.hideHandsIn360Environment
-    }
-    
-    // Volume ornament control panel removed - volume mode now uses VolumeControlPanelView on-screen
-    // private var volumeControlsView: ... (StandardControlPanelView was here)
-
     private func refreshAfterResume() {
         LiRequestIdrFrame()
         rebindScreenMaterial()
@@ -2624,7 +2559,6 @@ struct _RealityKitStreamView: View {
         hintOverlayTimer = nil
         hideTimer?.invalidate()
         scaleHUDFadeTimer?.invalidate()
-        environmentFadeTimer?.invalidate()
         reactiveLerpTimer?.invalidate()
         idrWatchdogTimer1?.invalidate(); idrWatchdogTimer1 = nil
         idrWatchdogTimer2?.invalidate(); idrWatchdogTimer2 = nil
@@ -2678,7 +2612,6 @@ struct _RealityKitStreamView: View {
         hintOverlayTimer = nil
         hideTimer?.invalidate()
         scaleHUDFadeTimer?.invalidate()
-        environmentFadeTimer?.invalidate()
         reactiveLerpTimer?.invalidate()
         
         idrWatchdogTimer1?.invalidate(); idrWatchdogTimer1 = nil
@@ -2741,218 +2674,6 @@ struct _RealityKitStreamView: View {
         streamMan = nil
         controllerSupport?.cleanup()
         controllerSupport = nil
-    }
-
-    private func startEnvironmentFade(targetOpacity: Float, completion: (() -> Void)? = nil) {
-        environmentFadeTimer?.invalidate()
-        
-        guard let dome = environmentDome else {
-            completion?()
-            return
-        }
-        
-        // Ensure OpacityComponent exists
-        if dome.components[OpacityComponent.self] == nil {
-            dome.components.set(OpacityComponent(opacity: targetOpacity == 1.0 ? 0.0 : 1.0))
-        }
-        
-        let startOpacity = dome.components[OpacityComponent.self]?.opacity ?? 0.0
-        
-        // If already close to target, just set and finish
-        if abs(startOpacity - targetOpacity) < 0.01 {
-            dome.components.set(OpacityComponent(opacity: targetOpacity))
-            completion?()
-            return
-        }
-        
-        let duration: TimeInterval = 0.5
-        let steps = 30
-        let interval = duration / Double(steps)
-        let stepAmount = (targetOpacity - startOpacity) / Float(steps)
-        
-        var currentStep = 0
-        
-        environmentFadeTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak dome] timer in
-            guard let dome = dome else {
-                timer.invalidate()
-                return
-            }
-            
-            currentStep += 1
-            let newOpacity = startOpacity + stepAmount * Float(currentStep)
-            dome.components.set(OpacityComponent(opacity: newOpacity))
-            
-            if currentStep >= steps {
-                if targetOpacity >= 1.0 {
-                    // Remove OpacityComponent when fully visible to avoid interfering with controls
-                    dome.components.remove(OpacityComponent.self)
-                } else {
-                    dome.components.set(OpacityComponent(opacity: targetOpacity))
-                }
-                timer.invalidate()
-                // self.environmentFadeTimer = nil // Omitted to avoid self capture complexity
-                completion?()
-            }
-        }
-    }
-
-    private func updateEnvironmentState() {
-        guard let dome = environmentDome else { return }
-        
-        if environmentSphereLevel == 0 {
-            startEnvironmentFade(targetOpacity: 0.0) {
-                dome.isEnabled = false
-                self.lastEnvironmentSphereLevelApplied = 0
-            }
-            return
-        }
-        
-        // If already enabled, fade out first then swap
-        if dome.isEnabled {
-            startEnvironmentFade(targetOpacity: 0.0) {
-                if let tex = self.currentSkyboxTexture() {
-                    self.applySkyboxTexture(tex)
-                    self.lastEnvironmentSphereLevelApplied = self.environmentSphereLevel
-                    self.startEnvironmentFade(targetOpacity: 1.0)
-                }
-            }
-            return
-        }
-        
-        if !dome.isEnabled {
-            dome.isEnabled = true
-            dome.components.set(OpacityComponent(opacity: 0.0))
-        }
-        
-        if let tex = currentSkyboxTexture() {
-            applySkyboxTexture(tex)
-            lastEnvironmentSphereLevelApplied = environmentSphereLevel
-            startEnvironmentFade(targetOpacity: 1.0)
-        }
-    }
-    
-    private func updateEnvPresetState() {
-        guard let dome = environmentDome else { return }
-        
-        if envPresetLevel == 0 {
-            startEnvironmentFade(targetOpacity: 0.0) {
-                dome.isEnabled = false
-            }
-            return
-        }
-        
-        // If already enabled, fade out first then swap
-        if dome.isEnabled {
-            startEnvironmentFade(targetOpacity: 0.0) {
-                if let tex = self.currentNewsetTexture() {
-                    self.applySkyboxTexture(tex)
-                    self.startEnvironmentFade(targetOpacity: 1.0)
-                }
-            }
-            return
-        }
-        
-        if !dome.isEnabled {
-            dome.isEnabled = true
-            dome.components.set(OpacityComponent(opacity: 0.0))
-        }
-        
-        if let tex = currentNewsetTexture() {
-            applySkyboxTexture(tex)
-            startEnvironmentFade(targetOpacity: 1.0)
-        }
-    }
-
-    private func currentSkyboxTexture() -> TextureResource? {
-        let builtinNames: [String] = []
-        let idx = environmentSphereLevel - 1
-        if idx >= 0 && idx < builtinNames.count {
-            if let cached = builtinSkyboxTextures[builtinNames[idx]] {
-                return cached
-            }
-            if let tex = loadTextureFromBundle(candidates: [builtinNames[idx]], subdirectory: nil) {
-                builtinSkyboxTextures[builtinNames[idx]] = tex
-                return tex
-            }
-        } else if idx >= 0 && idx - builtinNames.count < extraSkyboxTextures.count {
-            return extraSkyboxTextures[idx - builtinNames.count]
-        }
-        return nil
-    }
-    
-    private func currentNewsetTexture() -> TextureResource? {
-        let ambientPresetNames: [String] = []
-        let idx = envPresetLevel - 1
-        if idx >= 0 && idx < ambientPresetNames.count {
-            let name = ambientPresetNames[idx]
-            
-            if let cached = envPresetSkyboxTextures[name] {
-                return cached
-            }
-            
-            // Try without subdirectory (files added as group)
-            if let url = Bundle.main.url(forResource: name, withExtension: "jpg") {
-                if let tex = try? TextureResource.load(contentsOf: url) {
-                    envPresetSkyboxTextures[name] = tex
-                    return tex
-                }
-            }
-        }
-        return nil
-    }
-    
-    private func applySkyboxTexture(_ texture: TextureResource) {
-        guard let dome = environmentDome else { return }
-        var mat = UnlitMaterial(texture: texture)
-        // Keep the skybox material opaque when fully visible.
-        // OpacityComponent drives the fade and will automatically take the entity through a transparent path while fading.
-        mat.blending = .opaque
-        
-        guard let mesh = dome.model?.mesh else { return }
-        dome.model = ModelComponent(mesh: mesh, materials: [mat])
-        
-        // Apply rotation based on which set is active
-        if envPresetLevel > 0 {
-            let ambientPresetNames: [String] = []
-            let ambientPresetRotations: [String: Float] = [:]
-            let idx = envPresetLevel - 1
-            if idx >= 0 && idx < ambientPresetNames.count {
-                let skyboxName = ambientPresetNames[idx]
-                if let rotationAngle = ambientPresetRotations[skyboxName] {
-                    dome.orientation = simd_quatf(angle: rotationAngle, axis: SIMD3<Float>(0, 1, 0))
-        } else {
-                    dome.orientation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
-                }
-            }
-        } else if environmentSphereLevel > 0 {
-            let builtinNames: [String] = []
-            let rotations: [String: Float] = [:]
-            let idx = environmentSphereLevel - 1
-            if idx >= 0 && idx < builtinNames.count {
-                let skyboxName = builtinNames[idx]
-                if let rotationAngle = rotations[skyboxName] {
-                    dome.orientation = simd_quatf(angle: rotationAngle, axis: SIMD3<Float>(0, 1, 0))
-        } else {
-                    dome.orientation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
-                }
-            }
-        } else {
-            dome.orientation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
-        }
-    }
-
-    private func loadTextureFromBundle(candidates: [String], subdirectory: String?) -> TextureResource? {
-        for name in candidates {
-            if let url = Bundle.main.url(forResource: name, withExtension: "jpg", subdirectory: subdirectory) {
-                do {
-                    let tex = try TextureResource.load(contentsOf: url)
-                    return tex
-                } catch {
-                    print("[Texture] Error loading \(name).jpg: \(error)")
-                }
-            }
-        }
-        return nil
     }
 
     private func updateDimmerDomesState() {
@@ -3019,45 +2740,6 @@ struct _RealityKitStreamView: View {
         self.dimmerDomePurple = purpleDome
 
         updateDimmerDomesState()
-    }
-
-    private func setupEnvironment360(content: RealityViewContent) {
-        // RealityView's initial closure can run more than once across SwiftUI updates; guard
-        // so we never stack duplicate 60m spheres or re-fire skybox loads.
-        guard environmentDome == nil else { return }
-
-        let sphere = ModelEntity(mesh: .generateSphere(radius: 60.0), materials: [UnlitMaterial(color: .clear)])
-        sphere.scale.x = -1.0
-        sphere.isEnabled = false
-        content.add(sphere)
-        environmentDome = sphere
-
-        if extraSkyboxTextures.isEmpty && extraSkyboxNames.isEmpty {
-            loadExtraSkyboxesFromBundle()
-        }
-        if environmentSphereLevel != 0, let tex = currentSkyboxTexture() {
-            sphere.isEnabled = true
-            applySkyboxTexture(tex)
-            lastEnvironmentSphereLevelApplied = environmentSphereLevel
-        } else if envPresetLevel != 0, let tex = currentSkyboxTexture() {
-            sphere.isEnabled = true
-            applySkyboxTexture(tex)
-        }
-    }
-
-    func updateEnvironment360(content: RealityViewContent) {
-        // We handle environment updates via updateEnvironmentState() triggered by Binding changes
-        // to support fade animations. Automatic updates here would interfere with transitions.
-    }
-
-    private func restoreEnvironmentTextureIfNeeded() {
-        guard let dome = environmentDome else { return }
-        guard immersiveEnvironment.environmentStateHandler.activeState != .none || selectedEnvironmentState != .none else { return }
-        guard environmentSphereLevel != 0 || envPresetLevel != 0 else { return }
-        guard let tex = currentSkyboxTexture() else { return }
-
-        dome.isEnabled = true
-        applySkyboxTexture(tex)
     }
 
     internal init(streamConfig: Binding<StreamConfiguration>, needsHdr: Bool, isImmersive: Bool, swapAction: @escaping () -> Void) {
@@ -3346,71 +3028,11 @@ struct _RealityKitStreamView: View {
         }
     }
     
-    // MARK: - Preload Skyboxes
-    private func loadExtraSkyboxesFromBundle() {
-        extraSkyboxLoadTask?.cancel()
-        // Load skyboxes on background thread to avoid blocking main thread during view setup
-        extraSkyboxLoadTask = Task.detached(priority: .background) {
-            let exts = ["jpg", "jpeg", "png"]
-            let builtinSet: Set<String> = ["AboveClouds", "Above_Clouds"]
-            var names: [String] = []
-            var textures: [TextureResource] = []
-            
-            for ext in exts {
-                if let urls = Bundle.main.urls(forResourcesWithExtension: ext, subdirectory: "Skyboxes") {
-                    for url in urls {
-                        let base = url.deletingPathExtension().lastPathComponent
-                        if builtinSet.contains(base) { continue }
-                        if names.contains(base) { continue }
-                        do {
-                            let tex = try TextureResource.load(contentsOf: url)
-                            names.append(base)
-                            textures.append(tex)
-                        } catch {
-                            print("[Texture] Error loading \(base).\(ext): \(error)")
-                        }
-                    }
-                }
-            }
-            
-            // Update state on main thread once loading is complete
-            await MainActor.run {
-                guard !Task.isCancelled else { return }
-                self.extraSkyboxNames = names
-                self.extraSkyboxTextures = textures
-                print("[Skybox] Loaded \(names.count) extra skyboxes in background")
-                self.restoreEnvironmentTextureIfNeeded()
-                self.extraSkyboxLoadTask = nil
-            }
-        }
-    }
-
     /// Drop large optional GPU resources when immersive session or app backgrounds.
-    /// Studio USDZ is released via `ImmersiveEnvironment`; skybox / dimmer textures are cleared here.
+    /// Studio USDZ is released via `ImmersiveEnvironment`; the reactive dimmer material is cleared here.
     private func releaseImmersiveHeavyCachesForBackground() {
-        extraSkyboxLoadTask?.cancel()
-        extraSkyboxLoadTask = nil
-
-        extraSkyboxTextures = []
-        extraSkyboxNames = []
-        builtinSkyboxTextures = [:]
-        envPresetSkyboxTextures = [:]
-
-        jpgAboveTheCloudsTexture = nil
-        jpgAnimeTexture = nil
-        jpgJustSkyTexture = nil
-        jpgNightTimeTexture = nil
-        jpgTest1Texture = nil
-        jpgTest2Texture = nil
-        jpgTest3Texture = nil
         cachedReactiveMaterial = nil
-        environmentFadeTimer?.invalidate()
 
-        if let dome = environmentDome, let mesh = dome.model?.mesh {
-            var clearMat = UnlitMaterial(color: .clear)
-            clearMat.blending = .transparent(opacity: 1.0)
-            dome.model = ModelComponent(mesh: mesh, materials: [clearMat])
-        }
         if let purple = dimmerDomePurple, let mesh = purple.model?.mesh {
             var m = UnlitMaterial(color: .black)
             m.blending = .transparent(opacity: 1.0)
