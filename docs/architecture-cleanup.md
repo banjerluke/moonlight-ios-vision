@@ -180,3 +180,4 @@ This is a diagnosis, not a fix. It waits for wave 1, because the decoder fixes c
 ### Open questions for Luke (continued)
 - Dimming-picker options 5–14 (Midnight, Twilight, Dawn…) have done nothing visible since `7829498`; only levels 1–4 set an opacity. Remove them from the picker, or bring them back?
 - `hideHandsIn360Environment` has no effect, because the 360° environment was never wired up. Remove the setting?
+- Luke: the shimmer is on the curved screen viewed roughly head-on, and sharp text is worst, so it's aliasing at ~1:1 rather than an anisotropy problem. G is adding a live "Text anti-shimmer" mip-bias setting (default 0) so it can be tuned on device. Luke approved removing dimming options 5–14 and `hideHandsIn360Environment`; that's assigned to F's final commit. When everything is done, push the integration branch to `origin` (banjerluke) for Luke's HDR test.
