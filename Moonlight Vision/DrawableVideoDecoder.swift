@@ -129,6 +129,8 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     private var lastCopyFragment: String?
     private var ambilightPipelineState: MTLRenderPipelineState?
 
+    private var pixelFormatTraits: PixelFormatTraits?
+
     private var firstFrameEmitted = false
     private var lastAmbilightLogTime = Date.distantPast
     private var prevAmbilightTexture: MTLTexture?
@@ -216,34 +218,14 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         let pf = CVPixelBufferGetPixelFormatType(imageBuffer)
         let planeCount = CVPixelBufferGetPlaneCount(imageBuffer)
 
-        /// 10-bit YUV from VT is almost always HDR (PQ/HLG) in this pipeline; 8-bit is SDR — do **not** key off `hdrEnabled`.
-        let looksLikeBt2020TenBitStream: Bool = {
-            switch pf {
-            case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
-                 kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
-                 kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange,
-                 kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarFullRange_compat,
-                 kCVPixelFormatType_420YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_420YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossy_422YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossless_422YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossy_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_Lossless_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_444YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_444YpCbCr10PackedBiPlanarVideoRange:
-                return true
-            default:
-                return false
-            }
-        }()
+        let traits: PixelFormatTraits
+        if let cached = pixelFormatTraits, cached.pixelFormat == pf {
+            traits = cached
+        } else {
+            traits = PixelFormatTraits(pixelFormat: pf)
+            pixelFormatTraits = traits
+        }
+        let looksLikeBt2020TenBitStream = traits.isTenBit
 
         // PQ must follow the **frame** transfer function. Never force PQ just because the user enabled
         // "HDR display mode" — that was decoding SDR streams through pqInv() (too dark) while true PQ
@@ -286,28 +268,8 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
             matrixType = looksLikeBt2020TenBitStream ? 1 : 0
         }
 
-        let isFullRangeSource: Bool = {
-            switch pf {
-            case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr8BiPlanarFullRange,
-                 kCVPixelFormatType_444YpCbCr8BiPlanarFullRange,
-                 kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_Lossy_420YpCbCr8BiPlanarFullRange,
-                 kCVPixelFormatType_Lossless_420YpCbCr8BiPlanarFullRange,
-                 kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarFullRange_compat,
-                 kCVPixelFormatType_420YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_Lossy_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_Lossless_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_444YpCbCr10PackedBiPlanarFullRange:
-                return true
-            default:
-                return (formatDesc != nil) ? CVMetalHelpers.getIsFullRangeForVideoFormat(formatDesc!) : false
-            }
-        }()
+        let isFullRangeSource = traits.isFullRange
+            ?? ((formatDesc != nil) ? CVMetalHelpers.getIsFullRangeForVideoFormat(formatDesc!) : false)
 
         guard
             let drawable = try? drawableQueue?.nextDrawable()
@@ -316,28 +278,11 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
             return
         }
 
-        var isBiPlanar = false
-        var yFormat: MTLPixelFormat = .invalid
-        var cbcrFormat: MTLPixelFormat = .invalid
-
-        if planeCount >= 2 {
-            let srcMetalFormats = CVMetalHelpers.getTextureTypesForFormat(pf)
-            if srcMetalFormats.count > 0 { yFormat = srcMetalFormats[0] }
-            if srcMetalFormats.count > 1 { cbcrFormat = srcMetalFormats[1] }
-            isBiPlanar = (cbcrFormat != .invalid)
-            
-            if hdrEnabled {
-                yFormat = .r16Unorm
-                cbcrFormat = .rg16Unorm
-                isBiPlanar = true
-            } else {
-                // Avoid private "secret" SDR texture formats that may apply
-                // undocumented color transforms. Use explicit YUV planes instead.
-                yFormat = .r8Unorm
-                cbcrFormat = .rg8Unorm
-                isBiPlanar = true
-            }
-        }
+        // Avoid private "secret" SDR texture formats that may apply
+        // undocumented color transforms. Use explicit YUV planes instead.
+        let isBiPlanar = planeCount >= 2
+        let yFormat: MTLPixelFormat = hdrEnabled ? .r16Unorm : .r8Unorm
+        let cbcrFormat: MTLPixelFormat = hdrEnabled ? .rg16Unorm : .rg8Unorm
 
         if !firstFrameEmitted {
             let fmtStr = CVMetalHelpers.coreVideoPixelFormatToStr[pf] ?? "\(pf)"
@@ -435,38 +380,10 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
             renderEncoder.setFragmentTexture(sourceTexture, index: 0)
         }
 
-        let is10BitSource: Bool = {
-            switch pf {
-            case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
-                 kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
-                 kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange,
-                 kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,
-                 kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarFullRange_compat,
-                 kCVPixelFormatType_420YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_420YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossy_422YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossless_422YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_Lossy_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_Lossless_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr10PackedBiPlanarVideoRange,
-                 kCVPixelFormatType_444YpCbCr10PackedBiPlanarFullRange,
-                 kCVPixelFormatType_444YpCbCr10PackedBiPlanarVideoRange:
-                return true
-            default:
-                return false
-            }
-        }()
-
         struct ShaderHDRParams { var is10Bit: UInt32; var isFullRange: UInt32; var isPQ: UInt32; var matrixType: UInt32; var primariesType: UInt32; var isTargetDisplayP3: UInt32 }
         
         var shaderParams = ShaderHDRParams(
-            is10Bit: is10BitSource ? 1 : 0,
+            is10Bit: traits.isTenBit ? 1 : 0,
             isFullRange: isFullRangeSource ? 1 : 0,
             isPQ: isPQ ? 1 : 0,
             matrixType: matrixType,
@@ -1217,6 +1134,69 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         pipelineDescriptor.maxVertexAmplificationCount = 1
 
         return try? mtlDevice.makeRenderPipelineState(descriptor: pipelineDescriptor)
+    }
+}
+
+// MARK: - Pixel Format Traits
+
+/// What the shaders need to know about a VT output pixel format. Classified once per format
+/// change rather than on every frame.
+private struct PixelFormatTraits {
+    let pixelFormat: OSType
+    /// 10-bit YUV from VT is almost always HDR (PQ/HLG) in this pipeline; 8-bit is SDR — do **not** key off `hdrEnabled`.
+    let isTenBit: Bool
+    /// nil when the pixel format doesn't encode the range; the format description decides then.
+    let isFullRange: Bool?
+
+    init(pixelFormat pf: OSType) {
+        pixelFormat = pf
+
+        switch pf {
+        case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+             kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
+             kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
+             kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange,
+             kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,
+             kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarVideoRange,
+             kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarVideoRange,
+             kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarFullRange_compat,
+             kCVPixelFormatType_420YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_420YpCbCr10PackedBiPlanarVideoRange,
+             kCVPixelFormatType_Lossy_422YpCbCr10PackedBiPlanarVideoRange,
+             kCVPixelFormatType_Lossless_422YpCbCr10PackedBiPlanarVideoRange,
+             kCVPixelFormatType_Lossy_422YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_Lossless_422YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr10PackedBiPlanarVideoRange,
+             kCVPixelFormatType_444YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_444YpCbCr10PackedBiPlanarVideoRange:
+            isTenBit = true
+        default:
+            isTenBit = false
+        }
+
+        switch pf {
+        case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_444YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
+             kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,
+             kCVPixelFormatType_Lossy_420YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_Lossless_420YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarFullRange_compat,
+             kCVPixelFormatType_420YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_Lossy_422YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_Lossless_422YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr10PackedBiPlanarFullRange,
+             kCVPixelFormatType_444YpCbCr10PackedBiPlanarFullRange:
+            isFullRange = true
+        default:
+            isFullRange = nil
+        }
     }
 }
 
