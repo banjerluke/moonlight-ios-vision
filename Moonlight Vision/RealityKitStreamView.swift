@@ -238,6 +238,7 @@ struct _RealityKitStreamView: View {
     @State private var renderGateOpen: Bool = true
     
     private let attachmentLayoutAspectBox = MutableBox<Float>(-1)
+    private let attachmentLayoutFpsMouseBox = MutableBox<Bool?>(nil)
     
     // Stats attachment sizing in meters (fixed width target)
     @State private var statsScaleInitialized = false
@@ -1518,7 +1519,9 @@ struct _RealityKitStreamView: View {
             .onAppear {
                 isInputFocused = true
             }
-            .allowsHitTesting(inputMode == .controller && !viewModel.streamSettings.fpsMouseCapture)
+            // Stay hit-testable in FPS mode: pointer lock isn't always honored on visionOS, and
+            // without a surface here the system pointer wanders off and lands on the toolbar.
+            .allowsHitTesting(inputMode == .controller)
         }
     }
 
@@ -2241,11 +2244,13 @@ struct _RealityKitStreamView: View {
             (attachments.entity(for: "reconnectingOverlay")?.parent !== screen) ||
             (attachments.entity(for: "immersiveErrorOverlay")?.parent !== screen)
         let needsAttachmentLayout =
-            abs(attachmentLayoutAspectBox.value - screenAspect) > 0.001 || hasNewAttachmentEntity
+            abs(attachmentLayoutAspectBox.value - screenAspect) > 0.001 || hasNewAttachmentEntity ||
+            attachmentLayoutFpsMouseBox.value != viewModel.streamSettings.fpsMouseCapture
         
         if needsAttachmentLayout {
             layoutAttachments(attachments: attachments)
             attachmentLayoutAspectBox.value = screenAspect
+            attachmentLayoutFpsMouseBox.value = viewModel.streamSettings.fpsMouseCapture
         }
         
         // Lightweight per-frame: only update position-sensitive attachments
@@ -2359,9 +2364,12 @@ struct _RealityKitStreamView: View {
                     let unscaledHeight = Float(bounds.extents.y) / max(inputEnt.scale.y, 0.0001)
                     
                     let scaleX = (CURVED_MAX_WIDTH_METERS * 1.05) / unscaledWidth
-                    // Multiply height by 1.5 so the invisible interactive plane extends past the top/bottom 
-                    // of the screen mesh. This prevents the volume bounds from clipping the interaction area early.
-                    let scaleY = ((CURVED_MAX_WIDTH_METERS * Float(screenAspect)) * 1.5) / unscaledHeight
+                    // Absolute mouse: extend the plane 1.5x past the top/bottom of the screen mesh so the
+                    // pointer can comfortably reach the host's edges (SwiftUIAbsoluteMouseTracker maps it back).
+                    // FPS mouse: match the screen exactly, keeping the toolbar above outside the plane so the
+                    // pointer stops at the screen edge instead of landing on it.
+                    let heightOverscale: Float = viewModel.streamSettings.fpsMouseCapture ? 1.0 : 1.5
+                    let scaleY = ((CURVED_MAX_WIDTH_METERS * Float(screenAspect)) * heightOverscale) / unscaledHeight
                     
                     inputEnt.scale = [scaleX, scaleY, scaleX]
                 } else {

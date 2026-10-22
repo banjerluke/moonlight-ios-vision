@@ -217,8 +217,8 @@ struct ImmersiveControlPanelView: View {
                     // Input Mode Menu
                     Menu {
                         Button(action: { inputMode = .gazeControl }) { Label("Gaze Control", systemImage: "eye") }
-                        Button(action: { inputMode = .controller; viewModel.streamSettings.fpsMouseCapture = false; viewModel.streamSettings.save() }) { Label("Absolute Mouse", systemImage: "cursorarrow") }
-                        Button(action: { inputMode = .controller; viewModel.streamSettings.fpsMouseCapture = true; viewModel.streamSettings.save() }) { Label("FPS Locked Mouse", systemImage: "cursorarrow.and.square.on.square.dashed") }
+                        Button(action: { inputMode = .controller; viewModel.setFpsMouseCapture(false) }) { Label("Absolute Mouse", systemImage: "cursorarrow") }
+                        Button(action: { inputMode = .controller; viewModel.setFpsMouseCapture(true) }) { Label("FPS Locked Mouse", systemImage: "cursorarrow.and.square.on.square.dashed") }
                         Button(action: { inputMode = .screenMove }) { Label("Screen Adjust", systemImage: "arrow.up.and.down.and.arrow.left.and.right") }
                     } label: {
                         VStack(spacing: 10) {

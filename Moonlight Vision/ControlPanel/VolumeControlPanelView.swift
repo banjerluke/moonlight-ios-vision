@@ -124,8 +124,8 @@ struct VolumeControlPanelView: View {
                 // Input Mode Menu
                 Menu {
                     Button(action: { inputMode = .gazeControl }) { Label("Gaze Control", systemImage: "eye") }
-                    Button(action: { inputMode = .controller; viewModel.streamSettings.fpsMouseCapture = false; viewModel.streamSettings.save() }) { Label("Absolute Mouse", systemImage: "cursorarrow") }
-                    Button(action: { inputMode = .controller; viewModel.streamSettings.fpsMouseCapture = true; viewModel.streamSettings.save() }) { Label("FPS Locked Mouse", systemImage: "cursorarrow.and.square.on.square.dashed") }
+                    Button(action: { inputMode = .controller; viewModel.setFpsMouseCapture(false) }) { Label("Absolute Mouse", systemImage: "cursorarrow") }
+                    Button(action: { inputMode = .controller; viewModel.setFpsMouseCapture(true) }) { Label("FPS Locked Mouse", systemImage: "cursorarrow.and.square.on.square.dashed") }
                 } label: {
                     VStack(spacing: 10) {
                         Image(systemName: inputMode == .gazeControl ? "eye" : (viewModel.streamSettings.fpsMouseCapture ? "cursorarrow.and.square.on.square.dashed" : "cursorarrow"))

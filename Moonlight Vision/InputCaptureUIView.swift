@@ -103,6 +103,7 @@ struct InputCaptureView: UIViewControllerRepresentable {
         view.streamConfig = streamConfig
         view.headStorage = headStorage
         view.allowTouchPassthrough = !showKeyboard && !isControllerMode
+        view.hidesPointer = isControllerMode
         
         controllerSupport.fpsMouseCaptureEnabled = fpsMouseCapture
         controllerSupport.relativeMouseMode = isControllerMode
@@ -118,6 +119,7 @@ struct InputCaptureView: UIViewControllerRepresentable {
         view.headStorage = headStorage
         view.allowTouchPassthrough = !showKeyboard && !isControllerMode
         view.showVirtualKeyboard = showKeyboard
+        view.hidesPointer = isControllerMode
         
         controllerSupport.fpsMouseCaptureEnabled = fpsMouseCapture
         controllerSupport.relativeMouseMode = isControllerMode
@@ -291,25 +293,17 @@ struct SwiftUIAbsoluteMouseTracker: View {
     }
     
     private func updateCursorFromSystemPointer(location: CGPoint, bounds: CGSize) {
-        // This must perfectly match the sizing in RealityKitStreamView:
-        // targetWidth: CURVED_MAX_WIDTH_METERS * 1.05
+        // This must perfectly match the absolute-mouse sizing of the input overlay in RealityKitStreamView:
+        // CURVED_MAX_WIDTH_METERS * 1.05 wide, screen height * 1.5 tall
         let overscaleX: CGFloat = 1.05
+        let overscaleY: CGFloat = 1.5
         
         let rawNormX = location.x / bounds.width
         let rawNormY = location.y / bounds.height
         
         // Scale out from the exact center (0.5)
         let correctedNormX = (rawNormX - 0.5) * overscaleX + 0.5
-        
-        // Apply a non-linear curve for the Y axis to allow reaching the top and bottom of the host screen.
-        // The physical visionOS volume limits vertical movement, clipping rawNormY before it reaches 0 or 1.
-        // We use a cubic curve y = a*x + b*x^3 to maintain reasonable center sensitivity while 
-        // aggressively scaling the edges so the user can easily reach the full [-0.5, 0.5] range.
-        let dy = rawNormY - 0.5
-        let a: CGFloat = 1.5
-        let b: CGFloat = 50.0
-        let nonLinearY = (a * dy) + (b * (dy * dy * dy))
-        let correctedNormY = nonLinearY + 0.5
+        let correctedNormY = (rawNormY - 0.5) * overscaleY + 0.5
         
         var hostX = correctedNormX * CGFloat(streamConfig.width)
         var hostY = correctedNormY * CGFloat(streamConfig.height)
@@ -428,6 +422,7 @@ class InputCaptureViewController: UIViewController {
             // as our app regains focus.
             if let scene = notification.userInfo?[UIPointerLockState.sceneUserInfoKey] as? UIScene,
                let pointerLockState = (scene as? UIWindowScene)?.pointerLockState {
+                print("[PointerLock] Scene lock state changed: locked=\(pointerLockState.isLocked)")
                 
                 if !pointerLockState.isLocked && fpsMouseCaptureEnabled {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
@@ -464,7 +459,7 @@ class InputCaptureViewController: UIViewController {
     }
 }
 
-class InputCaptureUIView: UIView, UIKeyInput {
+class InputCaptureUIView: UIView, UIKeyInput, UIPointerInteractionDelegate {
     var controllerSupport: ControllerSupport?
     var curvature: Float = 0.0
     var streamConfig: StreamConfiguration?
@@ -479,6 +474,17 @@ class InputCaptureUIView: UIView, UIKeyInput {
         }
     }
     
+    // The host draws its own cursor in controller mode, so hide the system pointer over the stream.
+    // In FPS mode this also covers visionOS not always honoring pointer lock (e.g. in an ImmersiveSpace).
+    private lazy var pointerInteraction = UIPointerInteraction(delegate: self)
+    var hidesPointer: Bool = false {
+        didSet {
+            if oldValue != hidesPointer {
+                pointerInteraction.invalidate()
+            }
+        }
+    }
+    
     private let maxCurveAngle: Float = 1.3
     
     // Suppress software keyboard if showVirtualKeyboard is false, but still allow hardware input
@@ -488,12 +494,18 @@ class InputCaptureUIView: UIView, UIKeyInput {
     
     override init(frame: CGRect) {
         super.init(frame: frame)
+        addInteraction(pointerInteraction)
         startFirstResponderMonitoring()
     }
     
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+        addInteraction(pointerInteraction)
         startFirstResponderMonitoring()
+    }
+    
+    func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
+        return hidesPointer ? .hidden() : nil
     }
     
     private func startFirstResponderMonitoring() {

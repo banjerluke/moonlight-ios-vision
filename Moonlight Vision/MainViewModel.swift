@@ -789,6 +789,13 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
         objectWillChange.send()
     }
 
+    func setFpsMouseCapture(_ enabled: Bool) {
+        streamSettings.fpsMouseCapture = enabled
+        streamSettings.save()
+        // streamSettings isn't observable, so publish the change for views reading it mid-stream
+        objectWillChange.send()
+    }
+
     var currentLanguage: AppLanguage {
         streamSettings.appLanguage
     }
