@@ -78,6 +78,11 @@
     }
 }
 
+-(void)cleanup {
+    // Stops output without touching AVAudioSession
+    [_outputAU stop];
+}
+
 -(void *)getAudioBuffer:(int *)size
 {
     return [_outputAU getAudioBuffer:size];

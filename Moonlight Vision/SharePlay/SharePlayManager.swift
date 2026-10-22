@@ -73,6 +73,8 @@ class SharePlayManager: ObservableObject {
             let task = Task {
                 for await state in session.$state.values {
                     if case .invalidated = state {
+                        // A newer session may have replaced this one; leave its state alone.
+                        guard self.session === session else { break }
                         self.session = nil
                         self.messenger = nil
                         // Clean up tasks to prevent memory leaks

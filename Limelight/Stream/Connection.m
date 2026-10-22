@@ -63,7 +63,6 @@ static int audioFrameSize;
 static CoreAudioRenderer* audioRenderer;
 static OPUS_MULTISTREAM_CONFIGURATION visionOpusConfig;
 static OpusMSDecoder* visionOpusDecoder;
-static bool audioIsStopping;
 #endif // TARGET_OS_VISION
 
 // FIX 2: Define 'volume' so setVolume() compiles correctly
@@ -299,23 +298,15 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, v
 #endif // TARGET_OS_VISION
 }
 
-void ArStart(void) {
-#ifdef TARGET_OS_VISION
-    audioIsStopping = false;
-    [audioRenderer start];
-#endif // TARGET_OS_VISION
-}
-
-void ArStop(void) {
-#ifdef TARGET_OS_VISION
-    [audioRenderer stop];
-    audioIsStopping = true;
-#endif // TARGET_OS_VISION
-}
-
 void ArCleanup(void)
 {
 #ifdef TARGET_OS_VISION
+    // The library calls this after joining its audio threads. Stop the engine here
+    // so the renderer isn't released from inside its own render block; the app
+    // resets AVAudioSession once the stream has stopped.
+    [audioRenderer cleanup];
+    audioRenderer = nil;
+
     if (visionOpusDecoder != NULL) {
         opus_multistream_decoder_destroy(visionOpusDecoder);
         visionOpusDecoder = NULL;
@@ -350,8 +341,6 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
     int decodeLen;
     
 #ifdef TARGET_OS_VISION
-    if (audioIsStopping) return;
-
     CFTimeInterval decodeStartTime = CACurrentMediaTime();
 
     int desiredBufferSize;
@@ -414,38 +403,46 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
 #endif // TARGET_OS_VISION
 }
 
+// The Cl* callbacks capture _callbacks/renderer when the library fires them. By the
+// time the main-queue block runs, terminate may have cleared the globals or a newer
+// connection may have replaced them.
 void ClStageStarting(int stage)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks stageStarting:LiGetStageName(stage)];
+        [callbacks stageStarting:LiGetStageName(stage)];
     });
 }
 
 void ClStageComplete(int stage)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks stageComplete:LiGetStageName(stage)];
+        [callbacks stageComplete:LiGetStageName(stage)];
     });
 }
 
 void ClStageFailed(int stage, int errorCode)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks stageFailed:LiGetStageName(stage) withError:errorCode portTestFlags:LiGetPortFlagsFromStage(stage)];
+        [callbacks stageFailed:LiGetStageName(stage) withError:errorCode portTestFlags:LiGetPortFlagsFromStage(stage)];
     });
 }
 
 void ClConnectionStarted(void)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks connectionStarted];
+        [callbacks connectionStarted];
     });
 }
 
 void ClConnectionTerminated(int errorCode)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks connectionTerminated: errorCode];
+        [callbacks connectionTerminated: errorCode];
     });
 }
 
@@ -459,44 +456,51 @@ void ClLogMessage(const char* format, ...)
 
 void ClRumble(unsigned short controllerNumber, unsigned short lowFreqMotor, unsigned short highFreqMotor)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks rumble:controllerNumber lowFreqMotor:lowFreqMotor highFreqMotor:highFreqMotor];
+        [callbacks rumble:controllerNumber lowFreqMotor:lowFreqMotor highFreqMotor:highFreqMotor];
     });
 }
 
 void ClConnectionStatusUpdate(int status)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks connectionStatusUpdate:status];
+        [callbacks connectionStatusUpdate:status];
     });
 }
 
 void ClSetHdrMode(bool enabled)
 {
+    id<AnyVideoDecoderRenderer> currentRenderer = renderer;
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [renderer setHdrMode:enabled];
-        [_callbacks setHdrMode:enabled];
+        [currentRenderer setHdrMode:enabled];
+        [callbacks setHdrMode:enabled];
     });
 }
 
 void ClRumbleTriggers(uint16_t controllerNumber, uint16_t leftTriggerMotor, uint16_t rightTriggerMotor)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks rumbleTriggers:controllerNumber leftTrigger:leftTriggerMotor rightTrigger:rightTriggerMotor];
+        [callbacks rumbleTriggers:controllerNumber leftTrigger:leftTriggerMotor rightTrigger:rightTriggerMotor];
     });
 }
 
 void ClSetMotionEventState(uint16_t controllerNumber, uint8_t motionType, uint16_t reportRateHz)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks setMotionEventState:controllerNumber motionType:motionType reportRateHz:reportRateHz];
+        [callbacks setMotionEventState:controllerNumber motionType:motionType reportRateHz:reportRateHz];
     });
 }
 
 void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t b)
 {
+    id<ConnectionCallbacks> callbacks = _callbacks;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_callbacks setControllerLed:controllerNumber r:r g:g b:b];
+        [callbacks setControllerLed:controllerNumber r:r g:g b:b];
     });
 }
 
@@ -527,22 +531,27 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
             dispatch_semaphore_signal(stopSem);
         });
 
+        void (^pendingCompletion)(void) = completion;
         long result = dispatch_semaphore_wait(stopSem, dispatch_time(DISPATCH_TIME_NOW, 10LL * NSEC_PER_SEC));
         if (result != 0) {
             Log(LOG_E, @"[Connection] LiStopConnection() timed out after 10s.");
             LiInterruptConnection();
-            [initLock unlock];
-            if (completion) {
-                dispatch_async(dispatch_get_main_queue(), ^{ completion(); });
+
+            // Let the UI move on, but keep initLock held until LiStopConnection()
+            // really returns so the next connection can't start on top of it.
+            if (pendingCompletion) {
+                dispatch_async(dispatch_get_main_queue(), pendingCompletion);
+                pendingCompletion = nil;
             }
-            return;
+            dispatch_semaphore_wait(stopSem, DISPATCH_TIME_FOREVER);
+            Log(LOG_I, @"[Connection] LiStopConnection() returned after timeout.");
         }
 
-        [initLock unlock];
         if (renderer == self->_instanceRenderer) renderer = nil;
         if (_callbacks == self->_instanceCallbacks) _callbacks = nil;
-        if (completion) {
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(); });
+        [initLock unlock];
+        if (pendingCompletion) {
+            dispatch_async(dispatch_get_main_queue(), pendingCompletion);
         }
     });
 }
