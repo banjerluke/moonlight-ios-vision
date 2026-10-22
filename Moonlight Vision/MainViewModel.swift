@@ -89,7 +89,8 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
     @Published var isHidingForResume: Bool = false
     
     // Stream launch management
-    @Published var pendingAppToStream: TemporaryApp? = nil
+    /// An App Intent's app, waiting for the intent's scene to launch it through StreamLauncher.
+    var pendingIntentApp: TemporaryApp? = nil
     @Published var showActiveStreamAlert = false
     @Published var showClassicWindowCloseAlert = false
     @Published var showRealityWindowCloseAlert = false

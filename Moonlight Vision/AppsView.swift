@@ -22,6 +22,16 @@ struct AppsView: View {
     @State private var nowLoading: String?
     @State private var nowLoadingTimeout: Task<Void, Never>?
     @State private var streamModeOverlayApp: TemporaryApp?
+
+    private var launcher: StreamLauncher {
+        StreamLauncher(
+            viewModel: viewModel,
+            openWindow: openWindow,
+            dismissWindow: dismissWindow,
+            openImmersiveSpace: openImmersiveSpace,
+            dismissImmersiveSpace: dismissImmersiveSpace
+        )
+    }
     
     @Binding
     public var host: TemporaryHost
@@ -122,36 +132,8 @@ struct AppsView: View {
         nowLoading = appId
         startNowLoadingTimeout()
 
-        // If stale lifecycle state remains after crown/app interruptions, wait briefly and recover.
-        if viewModel.streamState != .idle {
-            await viewModel.waitForTeardown(timeout: 1.2)
-        }
-        if viewModel.streamState != .idle {
-            viewModel.forceResetStreamLifecycleIfNeeded()
-        }
-        if viewModel.activelyStreaming {
-            clearNowLoading()
-            return
-        }
-
-        let cooldown = viewModel.reconnectCooldownRemaining()
-        if cooldown > 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + cooldown + 0.05) {
-                Task {
-                    if viewModel.streamState != .idle {
-                        await viewModel.waitForTeardown()
-                    }
-                    await openAppStream(app: app)
-                }
-            }
-            return
-        }
-
-        if let stale = _UIKitStreamView.controllerReference.object {
-            stale.stopStream()
-            _UIKitStreamView.controllerReference.object = nil
-        }
-        await openAppStream(app: app)
+        await launcher.launch(app)
+        clearNowLoading()
     }
 
     @MainActor
@@ -202,48 +184,6 @@ struct AppsView: View {
         await viewModel.waitForTeardown(timeout: 1.2)
         if viewModel.streamState != .idle {
             viewModel.forceResetStreamLifecycleIfNeeded()
-        }
-    }
-
-    private func openAppStream(app: TemporaryApp) async {
-        viewModel.prepareForNewStream()
-
-        guard let config = viewModel.stream(app: app) else {
-            clearNowLoading()
-            return
-        }
-
-        let settings = viewModel.streamSettings
-
-        // Dismiss existing stream windows before opening new one
-        dismissWindow(id: "realitykitStreamingWindow")
-        dismissWindow(id: "classicStreamingWindow")
-
-        if settings.renderer == .realitykit && settings.realitykitImmersiveMode {
-            dismissWindow(id: "mainView")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                Task {
-                    _ = try? await openImmersiveSpace(id: "realitykitImmersiveSpace", value: config)
-                    await MainActor.run { clearNowLoading() }
-                }
-            }
-        } else {
-            Task {
-                await dismissImmersiveSpace()
-                await MainActor.run {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                        if settings.renderer == .realitykit {
-                            openWindow(id: "realitykitStreamingWindow", value: config)
-                        } else {
-                            openWindow(id: "classicStreamingWindow", value: config)
-                        }
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        dismissWindow(id: "mainView")
-                        clearNowLoading()
-                    }
-                }
-            }
         }
     }
 
