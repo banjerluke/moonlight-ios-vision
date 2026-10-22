@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import Synchronization
 
 /// Owns one stream's connection: the `StreamManager`, `ControllerSupport`, the IDR watchdog,
 /// reconnects, background suspend/resume and teardown. A stream view plugs in a `Port`
@@ -83,6 +84,7 @@ final class StreamSession: ObservableObject {
     private var reconnectCount = 0
     /// Bumped whenever the current attempt is superseded, so callbacks and timers from an old one are dropped.
     private var generation = 0
+    private var attemptCallbacks: AttemptCallbacks?
     private var idrWatchdogs: [Timer] = []
     private var connectWatchdog: Timer?
 
@@ -130,7 +132,7 @@ final class StreamSession: ObservableObject {
             return
         }
         print("[StreamSession] Suspending")
-        generation += 1
+        supersedeAttempt()
         phase = .suspended
         reconnectCount = 0
         stopConnection(resetAudio: true, completion: {})
@@ -149,8 +151,16 @@ final class StreamSession: ObservableObject {
 
     // MARK: - Attempts
 
-    private func scheduleAttempt(after delay: TimeInterval) {
+    /// Drops everything the current attempt still has in flight: pending timers and closures check
+    /// `generation`, and its callbacks stop reaching the port.
+    private func supersedeAttempt() {
         generation += 1
+        attemptCallbacks?.supersede()
+        attemptCallbacks = nil
+    }
+
+    private func scheduleAttempt(after delay: TimeInterval) {
+        supersedeAttempt()
         let gen = generation
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, gen == self.generation else { return }
@@ -175,6 +185,7 @@ final class StreamSession: ObservableObject {
         let gen = generation
         controllerSupport = support
         let callbacks = AttemptCallbacks(session: self, generation: gen, port: port.callbacks, controllerSupport: support)
+        attemptCallbacks = callbacks
         let makeRenderer = port.prepareAttempt(support, callbacks)
         guard let manager = StreamManager(
             config: config,
@@ -256,7 +267,7 @@ final class StreamSession: ObservableObject {
 
     private func handleLostConnection(message: String) {
         // Supersede the failed attempt so its other callbacks are ignored.
-        generation += 1
+        supersedeAttempt()
         let gen = generation
         guard reconnectCount < Self.maxReconnectAttempts else {
             print("[StreamSession] Reconnect attempts exhausted")
@@ -302,7 +313,7 @@ final class StreamSession: ObservableObject {
     // MARK: - Teardown
 
     private func teardown(ending end: End) {
-        generation += 1
+        supersedeAttempt()
         phase = .stopping
         stopConnection(resetAudio: true) { [weak self] in
             self?.finish(end)
@@ -391,13 +402,16 @@ final class StreamSession: ObservableObject {
 }
 
 /// One attempt's ConnectionCallbacks. Failures and the first frame go to the session, tagged with
-/// the attempt's generation so a superseded StreamManager can't affect the current one; everything
-/// else passes through to the port.
+/// the attempt's generation; everything else passes through to the port. Once the session
+/// supersedes the attempt, nothing reaches the port or the session any more, so a stale
+/// StreamManager can't affect the current one.
 private final class AttemptCallbacks: NSObject, ConnectionCallbacks {
     private weak var session: StreamSession?
     private let generation: Int
     private let port: ConnectionCallbacks
     private weak var controllerSupport: ControllerSupport?
+    /// Callbacks arrive on main, the VT thread and the connection threads, so this is atomic.
+    private let isCurrent = Atomic<Bool>(true)
 
     init(session: StreamSession, generation: Int, port: ConnectionCallbacks, controllerSupport: ControllerSupport) {
         self.session = session
@@ -406,7 +420,16 @@ private final class AttemptCallbacks: NSObject, ConnectionCallbacks {
         self.controllerSupport = controllerSupport
     }
 
+    func supersede() {
+        isCurrent.store(false, ordering: .releasing)
+    }
+
+    private var current: Bool {
+        isCurrent.load(ordering: .acquiring)
+    }
+
     private func toSession(_ body: @escaping @MainActor (StreamSession) -> Void) {
+        guard current else { return }
         Task { @MainActor [weak session] in
             guard let session else { return }
             body(session)
@@ -414,6 +437,7 @@ private final class AttemptCallbacks: NSObject, ConnectionCallbacks {
     }
 
     func connectionStarted() {
+        guard current else { return }
         port.connectionStarted()
     }
 
@@ -424,10 +448,12 @@ private final class AttemptCallbacks: NSObject, ConnectionCallbacks {
     }
 
     func stageStarting(_ stageName: UnsafePointer<CChar>!) {
+        guard current else { return }
         port.stageStarting(stageName)
     }
 
     func stageComplete(_ stageName: UnsafePointer<CChar>!) {
+        guard current else { return }
         port.stageComplete(stageName)
     }
 
@@ -452,30 +478,37 @@ private final class AttemptCallbacks: NSObject, ConnectionCallbacks {
     }
 
     func rumble(_ controllerNumber: UInt16, lowFreqMotor: UInt16, highFreqMotor: UInt16) {
+        guard current else { return }
         controllerSupport?.rumble(controllerNumber, lowFreqMotor: lowFreqMotor, highFreqMotor: highFreqMotor)
     }
 
     func rumbleTriggers(_ controllerNumber: UInt16, leftTrigger: UInt16, rightTrigger: UInt16) {
+        guard current else { return }
         controllerSupport?.rumbleTriggers(controllerNumber, leftTrigger: leftTrigger, rightTrigger: rightTrigger)
     }
 
     func connectionStatusUpdate(_ status: Int32) {
+        guard current else { return }
         port.connectionStatusUpdate(status)
     }
 
     func setHdrMode(_ enabled: Bool) {
+        guard current else { return }
         port.setHdrMode(enabled)
     }
 
     func setMotionEventState(_ controllerNumber: UInt16, motionType: UInt8, reportRateHz: UInt16) {
+        guard current else { return }
         port.setMotionEventState(controllerNumber, motionType: motionType, reportRateHz: reportRateHz)
     }
 
     func setControllerLed(_ controllerNumber: UInt16, r: UInt8, g: UInt8, b: UInt8) {
+        guard current else { return }
         port.setControllerLed(controllerNumber, r: r, g: g, b: b)
     }
 
     func videoContentShown() {
+        guard current else { return }
         port.videoContentShown()
         let gen = generation
         toSession { $0.firstFrameShown(generation: gen) }
