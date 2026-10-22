@@ -105,8 +105,17 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
     var ambilightQueue: TextureResource.DrawableQueue?
     var enableAmbilight: Bool = true
 
-    var session: VTDecompressionSession?
-    var decoderCallback: VTDecompressionOutputCallbackRecord
+    private var session: VTDecompressionSession?
+    private var decoderCallback: VTDecompressionOutputCallbackRecord
+    /// Full-range flag from the current format description, for pixel formats that don't encode
+    /// the range. Written before the session that reads it is created.
+    private var formatIsFullRange = false
+
+    /// Guards the decode-side state (session, formatDesc, parameter sets, HDR metadata, isStopped).
+    /// submitDecodeBuffer and setHdrMode run on the main thread; stop() runs on the connection
+    /// thread. Never taken on the VT output thread, so draining a session under it can't deadlock.
+    private let decodeLock = NSLock()
+    private var isStopped = false
     
     private let inflightSemaphore = DispatchSemaphore(value: 3)
     lazy var mtlDevice: MTLDevice = {
@@ -179,7 +188,6 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         }
 
         super.init()
-        decoderCallback.decompressionOutputRefCon = Unmanaged.passUnretained(self).toOpaque()
     }
 
     func decompressionOutputCallback(
@@ -268,8 +276,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
             matrixType = looksLikeBt2020TenBitStream ? 1 : 0
         }
 
-        let isFullRangeSource = traits.isFullRange
-            ?? ((formatDesc != nil) ? CVMetalHelpers.getIsFullRangeForVideoFormat(formatDesc!) : false)
+        let isFullRangeSource = traits.isFullRange ?? formatIsFullRange
 
         guard
             let drawable = try? drawableQueue?.nextDrawable()
@@ -295,26 +302,17 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
 
         let fragment: String = isBiPlanar ? "copyFragmentShaderHDR_EDR" : "copyFragmentShaderHEVC_EDR"
 
-        if isBiPlanar {
-            if copyPipelineStateYUV == nil || lastCopyFragment != fragment {
-                copyPipelineStateYUV = buildCopyPipeline(fragment: fragment)
-                lastCopyFragment = fragment
-                if copyPipelineStateYUV == nil {
-                    print("DrawableVideoDecoder: Failed to build YUV pipeline")
-                    commandBuffer.commit()
-                    return
-                }
-            }
+        let pipelineState: MTLRenderPipelineState
+        if let cached = isBiPlanar ? copyPipelineStateYUV : copyPipelineState, lastCopyFragment == fragment {
+            pipelineState = cached
+        } else if let built = buildCopyPipeline(fragment: fragment) {
+            if isBiPlanar { copyPipelineStateYUV = built } else { copyPipelineState = built }
+            lastCopyFragment = fragment
+            pipelineState = built
         } else {
-            if copyPipelineState == nil || lastCopyFragment != fragment {
-                copyPipelineState = buildCopyPipeline(fragment: fragment)
-                lastCopyFragment = fragment
-                if copyPipelineState == nil {
-                    print("DrawableVideoDecoder: Failed to build single-plane pipeline")
-                    commandBuffer.commit()
-                    return
-                }
-            }
+            print("DrawableVideoDecoder: Failed to build \(isBiPlanar ? "YUV" : "single-plane") pipeline")
+            commandBuffer.commit()
+            return
         }
 
         let renderPassDescriptor = MTLRenderPassDescriptor()
@@ -357,7 +355,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                 return
             }
 
-            renderEncoder.setRenderPipelineState(copyPipelineStateYUV!)
+            renderEncoder.setRenderPipelineState(pipelineState)
             renderEncoder.setFragmentTexture(yTex, index: 0)
             renderEncoder.setFragmentTexture(cbcrTex, index: 1)
         } else {
@@ -376,7 +374,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                 return
             }
 
-            renderEncoder.setRenderPipelineState(copyPipelineState!)
+            renderEncoder.setRenderPipelineState(pipelineState)
             renderEncoder.setFragmentTexture(sourceTexture, index: 0)
         }
 
@@ -590,17 +588,26 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         print("DrawableVideoDecoder: stop()")
         displayLink?.invalidate()
         displayLink = nil
-        
-        if let session = session {
-            VTDecompressionSessionInvalidate(session)
-            self.session = nil
-        }
-        
+
+        // The display link may still be mid-callback on main, so mark the decoder stopped
+        // before draining: a late IDR must not create a fresh session after this point.
+        decodeLock.lock()
+        isStopped = true
+        let oldSession = session
+        session = nil
         formatDesc = nil
         parameterSetBuffers.removeAll()
         masteringDisplayColorVolume = nil
         contentLightLevelInfo = nil
-        
+        decodeLock.unlock()
+
+        // After this no output callback is running or pending, so the render state below is ours.
+        if let oldSession {
+            invalidate(oldSession)
+        }
+        pixelFormatTraits = nil
+        formatIsFullRange = false
+
         if let cache = textureCache {
             CVMetalTextureCacheFlush(cache, 0)
         }
@@ -650,6 +657,23 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         bufferType: Int32,
         decode decodeUnit: PDECODE_UNIT!
     ) -> Int32 {
+        decodeLock.lock()
+        defer { decodeLock.unlock() }
+
+        guard !isStopped else {
+            // Picture data is ours to free; parameter sets belong to the library.
+            if bufferType == BUFFER_TYPE_PICDATA { free(dataPtr) }
+            return DR_OK
+        }
+        return submitDecodeBufferLocked(dataPtr, length: length, bufferType: bufferType, decodeUnit: decodeUnit)
+    }
+
+    private func submitDecodeBufferLocked(
+        _ dataPtr: UnsafeMutablePointer<UInt8>,
+        length: Int32,
+        bufferType: Int32,
+        decodeUnit: PDECODE_UNIT
+    ) -> Int32 {
         if decodeUnit.pointee.frameType == FRAME_TYPE_IDR {
             if bufferType != BUFFER_TYPE_PICDATA {
                 if bufferType == BUFFER_TYPE_VPS
@@ -665,7 +689,15 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
             if let formatDesc = recreateFormatDescriptionForIDR(
                 dataPtr: dataPtr, length: length
             ) {
+                // Drain and tear down the previous session before its replacement exists, so
+                // output callbacks never overlap and the old session isn't leaked.
+                if let oldSession = session {
+                    session = nil
+                    invalidate(oldSession)
+                }
+
                 self.formatDesc = formatDesc
+                formatIsFullRange = CVMetalHelpers.getIsFullRangeForVideoFormat(formatDesc)
                 let decoderConfiguration: [String: Any] = [
                     kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder as String: true,
                 ]
@@ -684,7 +716,17 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                     }
                 }
                 
-                VTDecompressionSessionCreate(allocator: kCFAllocatorDefault, formatDescription: formatDesc, decoderSpecification: decoderConfiguration as CFDictionary, imageBufferAttributes: attributes as CFDictionary, outputCallback: &decoderCallback, decompressionSessionOut: &session)
+                // The session's callback holds a strong reference to us, released in invalidate(_:),
+                // so a late callback can never see a freed decoder.
+                let refCon = Unmanaged.passRetained(self)
+                var outputCallback = decoderCallback
+                outputCallback.decompressionOutputRefCon = refCon.toOpaque()
+                let status = VTDecompressionSessionCreate(allocator: kCFAllocatorDefault, formatDescription: formatDesc, decoderSpecification: decoderConfiguration as CFDictionary, imageBufferAttributes: attributes as CFDictionary, outputCallback: &outputCallback, decompressionSessionOut: &session)
+                if status != noErr {
+                    print("VTDecompressionSessionCreate failed: \(status)")
+                    session = nil
+                    refCon.release()
+                }
 
                 AudioHelpers.fixAudioForSurroundForCurrentWindow()
             } else {
@@ -728,13 +770,19 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
 
     // MARK: - Helper: Recreate Format Description for IDR
 
+    /// Waits for the session's in-flight frames, then tears it down and drops the decoder
+    /// reference its output callback held.
+    private func invalidate(_ session: VTDecompressionSession) {
+        VTDecompressionSessionWaitForAsynchronousFrames(session)
+        VTDecompressionSessionInvalidate(session)
+        Unmanaged.passUnretained(self).release()
+    }
+
     private func recreateFormatDescriptionForIDR(
         dataPtr: UnsafeMutablePointer<UInt8>,
         length: Int32
     ) -> CMVideoFormatDescription? {
-        if let old = formatDesc {
-            formatDesc = nil
-        }
+        formatDesc = nil
 
         if (videoFormat & VIDEO_FORMAT_MASK_H264) != 0 {
             return createH264FormatDescription()
@@ -1105,6 +1153,8 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         let displayMetadata = HDRParsingUtils.parseHDRDisplayMetadata(enabled)
         let lightMetadata = HDRParsingUtils.parseHDRLightMetadata(enabled)
 
+        decodeLock.lock()
+        defer { decodeLock.unlock() }
         let metadataChanged = displayMetadata != masteringDisplayColorVolume
             || lightMetadata != contentLightLevelInfo
         masteringDisplayColorVolume = displayMetadata
