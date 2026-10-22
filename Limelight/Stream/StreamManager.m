@@ -131,14 +131,22 @@
 
 - (void) stopStreamWithCompletion:(void (^)(void))completion
 {
+    [self stopStreamWithCompletion:completion stopped:nil];
+}
+
+- (void) stopStreamWithCompletion:(void (^)(void))completion stopped:(void (^)(void))stopped
+{
     [self cancel];
     if (!_connection) {
         if (completion) {
             dispatch_async(dispatch_get_main_queue(), ^{ completion(); });
         }
+        if (stopped) {
+            dispatch_async(dispatch_get_main_queue(), ^{ stopped(); });
+        }
         return;
     }
-    [_connection terminateWithCompletion:completion];
+    [_connection terminateWithCompletion:completion stopped:stopped];
 }
 
 - (BOOL) launchApp:(HttpManager*)hMan receiveSessionUrl:(NSString**)sessionUrl {
