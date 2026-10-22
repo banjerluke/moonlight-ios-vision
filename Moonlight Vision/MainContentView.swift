@@ -74,7 +74,7 @@ struct MainContentView: View {
                     .buttonStyle(.plain) // Remove button styling to make it look like text
                 }
                 .toolbar {
-                    if viewModel.activelyStreaming {
+                    if viewModel.streamInProgress {
                         ToolbarItem(placement: .cancellationAction) {
                             Button(viewModel.localized("resume_stream"), systemImage: "play.circle.fill") {
                                 // If the window is still open, this notification un-hides the controls
@@ -188,7 +188,7 @@ struct MainContentView: View {
                 // when the view appears so the split view doesn't look empty.
                 if selectedHost == nil {
                     var hostToSelect: TemporaryHost?
-                    if viewModel.activelyStreaming {
+                    if viewModel.streamInProgress {
                         if let streamingIp = viewModel.currentStreamConfig.host ?? viewModel.savedStreamConfigForResume?.host {
                             hostToSelect = viewModel.hosts.first(where: { 
                                 $0.address == streamingIp || 

@@ -84,6 +84,12 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
     
     // Store saved stream config for auto-resume on window reopen
     @Published var savedStreamConfigForResume: StreamConfiguration? = nil
+
+    /// A stream is running, or was left resumable by Home or a closed window; the main menu shows
+    /// Resume and Stop instead of the app list.
+    var streamInProgress: Bool {
+        activelyStreaming || savedStreamConfigForResume != nil
+    }
     
     // Flag to indicate if we are hiding the stream to resume later
     @Published var isHidingForResume: Bool = false
@@ -145,12 +151,17 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
     
     func userDidRequestDisconnect() {
         activelyStreaming = false
-        guard let session = activeSession, session.isLive else { return }
-        // Stop now, before the caller dismisses any stream window. The stream views close
-        // themselves when they see shouldCloseStream.
-        session.stop(.user)
-        beginReconnectCooldown(1.5)
-        shouldCloseStream = true
+        // A stream the user stopped can't be resumed.
+        savedStreamConfigForResume = nil
+        if let session = activeSession, session.isLive {
+            // Stop now, before the caller dismisses any stream window. The stream views close
+            // themselves when they see shouldCloseStream.
+            session.stop(.user)
+            beginReconnectCooldown(1.5)
+            shouldCloseStream = true
+        }
+        // Quit the app on the host too, including one left resumable by Home or a closed window.
+        defer { currentlyStreamingAppId = nil }
         if let appId = currentlyStreamingAppId,
            let host = hosts.first(where: { $0.appList.contains(where: { $0.id == appId || $0.name == appId }) }) {
             let httpManager = HttpManager(host: host)
@@ -606,8 +617,10 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
             } else {
                 savedStreamConfigForResume = session.config
             }
+        } else {
+            // Keep the app for a resumable stream, so Stop in the main menu can still quit it.
+            currentlyStreamingAppId = nil
         }
-        currentlyStreamingAppId = nil
         reconnectCooldownUntil = nil
         activelyStreaming = false
     }

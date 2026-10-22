@@ -905,7 +905,6 @@ struct _RealityKitStreamView: View {
             // Redirect to main menu and close self.
             openWindow(id: "mainView")
             Task { @MainActor in
-                viewModel.userDidRequestDisconnect()
                 await dismissImmersiveSpace()
                 if !isImmersive {
                     dismissWindow(id: "realitykitStreamingWindow")
