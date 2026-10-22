@@ -78,24 +78,24 @@ class StreamControlState: ObservableObject {
     private init() {
         // Load saved immersive screen settings
         let defaults = UserDefaults.standard
-        if let savedScale = defaults.object(forKey: "realitykitImmersiveScale") as? Float {
+        if let savedScale = defaults.object(forKey: .realitykitImmersiveScale) as? Float {
             immersiveScale = savedScale
         }
-        if let savedPosX = defaults.object(forKey: "realitykitImmersivePosX") as? Float,
-           let savedPosY = defaults.object(forKey: "realitykitImmersivePosY") as? Float,
-           let savedPosZ = defaults.object(forKey: "realitykitImmersivePosZ") as? Float {
+        if let savedPosX = defaults.object(forKey: .realitykitImmersivePosX) as? Float,
+           let savedPosY = defaults.object(forKey: .realitykitImmersivePosY) as? Float,
+           let savedPosZ = defaults.object(forKey: .realitykitImmersivePosZ) as? Float {
             immersivePositionX = savedPosX
             immersivePositionY = savedPosY
             immersivePositionZ = savedPosZ
         }
-        if let savedImmersion = defaults.object(forKey: "realitykitImmersionAmount") as? Float {
+        if let savedImmersion = defaults.object(forKey: .realitykitImmersionAmount) as? Float {
             immersionAmount = savedImmersion
         }
         // Load pinned screen settings
-        if let savedPinnedScale = defaults.object(forKey: "realitykitPinnedStageScale") as? Float {
+        if let savedPinnedScale = defaults.object(forKey: .realitykitPinnedStageScale) as? Float {
             pinnedStageScale = savedPinnedScale
         }
-        if let savedPinnedHeight = defaults.object(forKey: "realitykitPinnedStageHeight") as? Float {
+        if let savedPinnedHeight = defaults.object(forKey: .realitykitPinnedStageHeight) as? Float {
             pinnedStageHeight = savedPinnedHeight
         }
         

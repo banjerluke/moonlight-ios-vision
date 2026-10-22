@@ -189,7 +189,7 @@ struct VolumeControlPanelView: View {
                     withAnimation {
                         viewModel.streamSettings.reactiveLightingEnabled.toggle()
                         controlState.reactiveLighting = viewModel.streamSettings.reactiveLightingEnabled
-                        UserDefaults.standard.set(viewModel.streamSettings.reactiveLightingEnabled, forKey: "reactiveLightingEnabled")
+                        UserDefaults.standard.set(viewModel.streamSettings.reactiveLightingEnabled, forKey: .reactiveLightingEnabled)
                     }
                 }
                 if let toggle = toggleKeyboardAction {
@@ -271,7 +271,7 @@ struct VolumeControlPanelView: View {
         dimPassthroughSaveTimer?.invalidate()
         dimPassthroughSaveTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
             if viewModel.streamSettings.rememberStreamSettings {
-                UserDefaults.standard.set(viewModel.streamSettings.dimPassthrough, forKey: "realitykitVolumeDimPassthrough")
+                UserDefaults.standard.set(viewModel.streamSettings.dimPassthrough, forKey: .realitykitVolumeDimPassthrough)
             }
             viewModel.streamSettings.save()
         }
@@ -280,15 +280,15 @@ struct VolumeControlPanelView: View {
     private func saveVolumeSettings() {
         guard viewModel.streamSettings.rememberStreamSettings else { return }
         let defaults = UserDefaults.standard
-        defaults.set(height, forKey: "realitykitHeight")
-        defaults.set(depthOffset, forKey: "realitykitDepthOffset")
+        defaults.set(height, forKey: .realitykitHeight)
+        defaults.set(depthOffset, forKey: .realitykitDepthOffset)
         viewModel.streamSettings.realitykitRendererTilt = controlState.tiltAngle
-        defaults.set(viewModel.streamSettings.realitykitRendererCurvature, forKey: "realitykitVolumeCurvature")
-        defaults.set(viewModel.streamSettings.gamma, forKey: "realitykitVolumeGamma")
-        defaults.set(viewModel.streamSettings.saturation, forKey: "realitykitVolumeSaturation")
-        defaults.set(viewModel.streamSettings.brightness, forKey: "realitykitVolumeBrightness")
-        defaults.set(viewModel.streamSettings.pqExposure, forKey: "realitykitVolumePqExposure")
-        defaults.set(viewModel.streamSettings.dimPassthrough, forKey: "realitykitVolumeDimPassthrough")
+        defaults.set(viewModel.streamSettings.realitykitRendererCurvature, forKey: .realitykitVolumeCurvature)
+        defaults.set(viewModel.streamSettings.gamma, forKey: .realitykitVolumeGamma)
+        defaults.set(viewModel.streamSettings.saturation, forKey: .realitykitVolumeSaturation)
+        defaults.set(viewModel.streamSettings.brightness, forKey: .realitykitVolumeBrightness)
+        defaults.set(viewModel.streamSettings.pqExposure, forKey: .realitykitVolumePqExposure)
+        defaults.set(viewModel.streamSettings.dimPassthrough, forKey: .realitykitVolumeDimPassthrough)
         viewModel.streamSettings.save()
     }
 }

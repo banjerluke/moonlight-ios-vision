@@ -427,13 +427,13 @@ struct SettingsView: View {
                     Button(action: {
                         // Reset Immersive View Preferences
                         let defaults = UserDefaults.standard
-                        defaults.removeObject(forKey: "realitykitImmersiveScale")
-                        defaults.removeObject(forKey: "realitykitImmersivePosX")
-                        defaults.removeObject(forKey: "realitykitImmersivePosY")
-                        defaults.removeObject(forKey: "realitykitImmersivePosZ")
-                        defaults.removeObject(forKey: "realitykitImmersionAmount")
-                        defaults.removeObject(forKey: "realitykitPinnedStageScale")
-                        defaults.removeObject(forKey: "realitykitPinnedStageHeight")
+                        defaults.removeObject(forKey: .realitykitImmersiveScale)
+                        defaults.removeObject(forKey: .realitykitImmersivePosX)
+                        defaults.removeObject(forKey: .realitykitImmersivePosY)
+                        defaults.removeObject(forKey: .realitykitImmersivePosZ)
+                        defaults.removeObject(forKey: .realitykitImmersionAmount)
+                        defaults.removeObject(forKey: .realitykitPinnedStageScale)
+                        defaults.removeObject(forKey: .realitykitPinnedStageHeight)
                         
                         Task { @MainActor in
                             StreamControlState.shared.immersiveScale = 0.8

@@ -3532,77 +3532,74 @@ struct _RealityKitStreamView: View {
         var pos = screenPosition
         let scale = screenScale
         let packed = [pos.x, pos.y, pos.z]
-        UserDefaults.standard.set(packed, forKey: kImmersivePosKey)
-        UserDefaults.standard.set(scale, forKey: kImmersiveScaleKey)
+        UserDefaults.standard.set(packed, forKey: .legacyImmersivePosition)
+        UserDefaults.standard.set(scale, forKey: .legacyImmersiveScale)
     }
 
     private func restoreSavedTransform() {
         let defaults = UserDefaults.standard
         if !isImmersive {
-            if let h = defaults.object(forKey: "realitykitHeight") as? Float { volumeHeight = h }
-            if let d = defaults.object(forKey: "realitykitDepthOffset") as? Float { volumeDepthOffset = d }
-            if let legacyTilt = defaults.object(forKey: "realitykitTiltAngle") as? Float { 
+            if let h = defaults.object(forKey: .realitykitHeight) as? Float { volumeHeight = h }
+            if let d = defaults.object(forKey: .realitykitDepthOffset) as? Float { volumeDepthOffset = d }
+            if let legacyTilt = defaults.object(forKey: .legacyTiltAngle) as? Float { 
                 controlState.tiltAngle = legacyTilt
                 tiltAngle = legacyTilt
                 viewModel.streamSettings.realitykitRendererTilt = legacyTilt
-                defaults.removeObject(forKey: "realitykitTiltAngle")
+                defaults.removeObject(forKey: .legacyTiltAngle)
             }
             if viewModel.streamSettings.rememberStreamSettings {
-                if let c = defaults.object(forKey: "realitykitVolumeCurvature") as? Float { viewModel.streamSettings.realitykitRendererCurvature = c }
-                if let g = defaults.object(forKey: "realitykitVolumeGamma") as? Float { viewModel.streamSettings.gamma = g }
-                if let s = defaults.object(forKey: "realitykitVolumeSaturation") as? Float { viewModel.streamSettings.saturation = s }
-                if let b = defaults.object(forKey: "realitykitVolumeBrightness") as? Float { viewModel.streamSettings.brightness = b }
-                if let p = defaults.object(forKey: "realitykitVolumePqExposure") as? Float {
+                if let c = defaults.object(forKey: .realitykitVolumeCurvature) as? Float { viewModel.streamSettings.realitykitRendererCurvature = c }
+                if let g = defaults.object(forKey: .realitykitVolumeGamma) as? Float { viewModel.streamSettings.gamma = g }
+                if let s = defaults.object(forKey: .realitykitVolumeSaturation) as? Float { viewModel.streamSettings.saturation = s }
+                if let b = defaults.object(forKey: .realitykitVolumeBrightness) as? Float { viewModel.streamSettings.brightness = b }
+                if let p = defaults.object(forKey: .realitykitVolumePqExposure) as? Float {
                     viewModel.streamSettings.pqExposure = p
-                } else if let p = defaults.object(forKey: "realitykitPqExposure") as? Float {
+                } else if let p = defaults.object(forKey: .realitykitPqExposure) as? Float {
                     viewModel.streamSettings.pqExposure = p
                 }
-                if let dim = defaults.object(forKey: "realitykitVolumeDimPassthrough") as? Bool { viewModel.streamSettings.dimPassthrough = dim }
+                if let dim = defaults.object(forKey: .realitykitVolumeDimPassthrough) as? Bool { viewModel.streamSettings.dimPassthrough = dim }
             }
             return
         }
         // Prefer controlState values (saved by control panel) over legacy immersive.pos/scale
         if viewModel.streamSettings.rememberStreamSettings {
-            if let c = defaults.object(forKey: "realitykitImmersiveCurvature") as? Float { viewModel.streamSettings.realitykitRendererCurvature = c }
-            if let g = defaults.object(forKey: "realitykitImmersiveGamma") as? Float { viewModel.streamSettings.gamma = g }
-            if let s = defaults.object(forKey: "realitykitImmersiveSaturation") as? Float { viewModel.streamSettings.saturation = s }
-            if let b = defaults.object(forKey: "realitykitImmersiveBrightness") as? Float { viewModel.streamSettings.brightness = b }
-            if let p = defaults.object(forKey: "realitykitImmersivePqExposure") as? Float { viewModel.streamSettings.pqExposure = p }
+            if let c = defaults.object(forKey: .realitykitImmersiveCurvature) as? Float { viewModel.streamSettings.realitykitRendererCurvature = c }
+            if let g = defaults.object(forKey: .realitykitImmersiveGamma) as? Float { viewModel.streamSettings.gamma = g }
+            if let s = defaults.object(forKey: .realitykitImmersiveSaturation) as? Float { viewModel.streamSettings.saturation = s }
+            if let b = defaults.object(forKey: .realitykitImmersiveBrightness) as? Float { viewModel.streamSettings.brightness = b }
+            if let p = defaults.object(forKey: .realitykitImmersivePqExposure) as? Float { viewModel.streamSettings.pqExposure = p }
         }
         // Position/scale: only restore when rememberStreamSettings and valid saved data exists
         let defaultImmersivePosition = SIMD3<Float>(0, 1.0, -1.5)
         let defaultImmersiveScale: Float = 0.8
         if viewModel.streamSettings.rememberStreamSettings {
-            if let savedPosX = defaults.object(forKey: "realitykitImmersivePosX") as? Float,
-               let savedPosY = defaults.object(forKey: "realitykitImmersivePosY") as? Float,
-               let savedPosZ = defaults.object(forKey: "realitykitImmersivePosZ") as? Float {
+            if let savedPosX = defaults.object(forKey: .realitykitImmersivePosX) as? Float,
+               let savedPosY = defaults.object(forKey: .realitykitImmersivePosY) as? Float,
+               let savedPosZ = defaults.object(forKey: .realitykitImmersivePosZ) as? Float {
                 screenPosition = SIMD3<Float>(savedPosX, savedPosY, savedPosZ)
-            } else if let packed = defaults.array(forKey: kImmersivePosKey) as? [Float], packed.count == 3 {
+            } else if let packed = defaults.array(forKey: .legacyImmersivePosition) as? [Float], packed.count == 3 {
                 screenPosition = SIMD3<Float>(packed[0], packed[1], packed[2])
             } else {
                 screenPosition = defaultImmersivePosition
             }
-            if let savedScale = defaults.object(forKey: "realitykitImmersiveScale") as? Float, savedScale > 0 {
+            if let savedScale = defaults.object(forKey: .realitykitImmersiveScale) as? Float, savedScale > 0 {
                 screenScale = savedScale
             } else {
-                let scale = defaults.float(forKey: kImmersiveScaleKey)
+                let scale = defaults.float(forKey: .legacyImmersiveScale)
                 screenScale = scale > 0 ? scale : defaultImmersiveScale
             }
         } else {
             screenPosition = defaultImmersivePosition
             screenScale = defaultImmersiveScale
         }
-        if let savedImmersion = defaults.object(forKey: "realitykitImmersionAmount") as? Float {
+        if let savedImmersion = defaults.object(forKey: .realitykitImmersionAmount) as? Float {
             immersionAmount = savedImmersion
         }
-        if let savedLocked = defaults.object(forKey: kImmersiveLockedKey) as? Bool {
+        if let savedLocked = defaults.object(forKey: .immersiveLocked) as? Bool {
             controlState.isInteractive = savedLocked
         }
     }
     
-    private let kImmersiveLockedKey = "immersive.locked"
-    private let kImmersivePosKey = "immersive.pos"
-    private let kImmersiveScaleKey = "immersive.scale"
     private func handleWindowClose() {
         isMenuOpen = false
         if let sceneID = self.immersiveSpaceSceneID {
@@ -3958,22 +3955,22 @@ struct _RealityKitStreamView: View {
         let defaults = UserDefaults.standard
         viewModel.streamSettings.realitykitRendererTilt = tiltAngle
         if isImmersive {
-            defaults.set(screenScale, forKey: "realitykitImmersiveScale")
-            defaults.set(screenPosition.x, forKey: "realitykitImmersivePosX")
-            defaults.set(screenPosition.y, forKey: "realitykitImmersivePosY")
-            defaults.set(screenPosition.z, forKey: "realitykitImmersivePosZ")
-            defaults.set(immersionAmount, forKey: "realitykitImmersionAmount")
-            defaults.set(controlState.pinnedStageScale, forKey: "realitykitPinnedStageScale")
-            defaults.set(controlState.pinnedStageHeight, forKey: "realitykitPinnedStageHeight")
-            defaults.set(controlState.isInteractive, forKey: kImmersiveLockedKey)
-            defaults.set(viewModel.streamSettings.realitykitRendererCurvature, forKey: "realitykitImmersiveCurvature")
-            defaults.set(viewModel.streamSettings.gamma, forKey: "realitykitImmersiveGamma")
-            defaults.set(viewModel.streamSettings.saturation, forKey: "realitykitImmersiveSaturation")
-            defaults.set(viewModel.streamSettings.brightness, forKey: "realitykitImmersiveBrightness")
-            defaults.set(viewModel.streamSettings.pqExposure, forKey: "realitykitImmersivePqExposure")
+            defaults.set(screenScale, forKey: .realitykitImmersiveScale)
+            defaults.set(screenPosition.x, forKey: .realitykitImmersivePosX)
+            defaults.set(screenPosition.y, forKey: .realitykitImmersivePosY)
+            defaults.set(screenPosition.z, forKey: .realitykitImmersivePosZ)
+            defaults.set(immersionAmount, forKey: .realitykitImmersionAmount)
+            defaults.set(controlState.pinnedStageScale, forKey: .realitykitPinnedStageScale)
+            defaults.set(controlState.pinnedStageHeight, forKey: .realitykitPinnedStageHeight)
+            defaults.set(controlState.isInteractive, forKey: .immersiveLocked)
+            defaults.set(viewModel.streamSettings.realitykitRendererCurvature, forKey: .realitykitImmersiveCurvature)
+            defaults.set(viewModel.streamSettings.gamma, forKey: .realitykitImmersiveGamma)
+            defaults.set(viewModel.streamSettings.saturation, forKey: .realitykitImmersiveSaturation)
+            defaults.set(viewModel.streamSettings.brightness, forKey: .realitykitImmersiveBrightness)
+            defaults.set(viewModel.streamSettings.pqExposure, forKey: .realitykitImmersivePqExposure)
         } else {
-            defaults.set(volumeHeight, forKey: "realitykitHeight")
-            defaults.set(volumeDepthOffset, forKey: "realitykitDepthOffset")
+            defaults.set(volumeHeight, forKey: .realitykitHeight)
+            defaults.set(volumeDepthOffset, forKey: .realitykitDepthOffset)
         }
         viewModel.streamSettings.save()
     }
