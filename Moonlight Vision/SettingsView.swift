@@ -306,6 +306,21 @@ struct SettingsView: View {
                                 settings.save()
                             }
                         }
+
+                    HStack {
+                        Label(viewModel.localized("text_anti_shimmer"), systemImage: "textformat.size")
+                        Spacer()
+                        Text(String(format: "%.2f", settings.realitykitTextAntiShimmer))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: $settings.realitykitTextAntiShimmer, in: 0...2, step: 0.05)
+                        .onChange(of: settings.realitykitTextAntiShimmer) { _, _ in
+                            saveTimer?.invalidate()
+                            saveTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
+                                settings.save()
+                            }
+                        }
                     
                     Toggle(isOn: $settings.dimPassthrough) {
                         Label(viewModel.localized("dim_passthrough"), systemImage: "moon.fill")
