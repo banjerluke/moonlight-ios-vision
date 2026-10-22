@@ -192,6 +192,8 @@ struct _RealityKitStreamView: View {
         params: HDRParams(boost: 1.0, contrast: 1.0, saturation: 1.0, brightness: 0.0, pqExposure: 1.0, mode: 0)
     )
     @StateObject private var hdrParams = HDRTestParams()
+    /// Snapshot of reactiveLightingEnabled for the decoder's VT output thread.
+    @State private var safeAmbilightEnabled = ThreadSafeFlag(false)
 
     @State private var showVirtualKeyboard = false
     @State private var hideControls: Bool = false
@@ -621,6 +623,7 @@ struct _RealityKitStreamView: View {
                 if viewModel.streamSettings.enableHdr { updateHDRParams() }
             }
             .onChange(of: viewModel.streamSettings.reactiveLightingEnabled) { _, newValue in
+                safeAmbilightEnabled.value = newValue
                 updateDimmerDomesState()
                 updateScreenMaterial()
                 if newValue {
@@ -2407,20 +2410,20 @@ struct _RealityKitStreamView: View {
             // Set controller support reference for rumble forwarding
             self.connectionCallbacks.controllerSupport = self.controllerSupport
             
-            // Capture texture locally for thread-safe background access
-            let localTexture = self.texture
-            
+            // The decoder reads these per frame on the VT thread, so capture the thread-safe boxes.
+            let hdrSettings = self.safeHDRSettings
+            let ambilightEnabled = self.safeAmbilightEnabled
+            ambilightEnabled.value = self.viewModel.streamSettings.reactiveLightingEnabled
+
             self.streamMan = StreamManager(
                 config: self.streamConfig,
                 rendererProvider: {
                     DrawableVideoDecoder(
-                        texture: localTexture,
                         callbacks: self.connectionCallbacks,
-                        aspectRatio: self.screenAspect,
                         useFramePacing: self.streamConfig.useFramePacing,
                         enableHDR: self.viewModel.streamSettings.enableHdr,
                         hdrSettingsProvider: {
-                            self.safeHDRSettings.value
+                            hdrSettings.value
                         },
                         enhancementsProvider: {
                             (1.0, 1.0, 0.0)
@@ -2429,7 +2432,7 @@ struct _RealityKitStreamView: View {
                             !self.isImmersive
                         },
                         enableAmbilightProvider: {
-                            self.viewModel.streamSettings.reactiveLightingEnabled
+                            ambilightEnabled.value
                         },
                         callbackToRender: { textureQueue, ambilightQueue, correctedResolution in
                             guard self.renderGateOpen else { return }
