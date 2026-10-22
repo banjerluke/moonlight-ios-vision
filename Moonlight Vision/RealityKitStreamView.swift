@@ -2735,8 +2735,10 @@ struct _RealityKitStreamView: View {
     private func startStatsTimer() {
         statsTimer?.invalidate()
         statsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            if let stats = self.session.statsOverlayText() {
-                self.statsOverlayText = stats
+            MainActor.assumeIsolated {
+                if let stats = self.session.statsOverlayText() {
+                    self.statsOverlayText = stats
+                }
             }
         }
     }
