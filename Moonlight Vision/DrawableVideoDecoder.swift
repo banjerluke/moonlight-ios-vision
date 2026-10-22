@@ -691,7 +691,8 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
             displayLink?.preferredFramesPerSecond = Int(frameRate)
         }
 
-        displayLink?.add(to: .main, forMode: .default)
+        // Keep decoding while the main run loop is tracking gestures and controls.
+        displayLink?.add(to: .main, forMode: .common)
     }
 
     func stop() {
@@ -794,14 +795,27 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                     }
                 }
                 
-                VTDecompressionSessionCreate(allocator: kCFAllocatorDefault, formatDescription: formatDesc, decoderSpecification: decoderConfiguration as CFDictionary, imageBufferAttributes: attributes as CFDictionary, outputCallback: &decoderCallback, decompressionSessionOut: &session)
-                if let session {
-                    // Ask the system to schedule decode work for real-time playback rather than
-                    // throughput; visionOS is always busy rendering while we stream.
-                    VTSessionSetProperty(session, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+                // Every IDR gets a fresh session; release the previous one instead of leaking it.
+                let isFirstSession = session == nil
+                if let oldSession = session {
+                    VTDecompressionSessionWaitForAsynchronousFrames(oldSession)
+                    VTDecompressionSessionInvalidate(oldSession)
+                    session = nil
                 }
 
-                AudioHelpers.fixAudioForSurroundForCurrentWindow()
+                let status = VTDecompressionSessionCreate(allocator: kCFAllocatorDefault, formatDescription: formatDesc, decoderSpecification: decoderConfiguration as CFDictionary, imageBufferAttributes: attributes as CFDictionary, outputCallback: &decoderCallback, decompressionSessionOut: &session)
+                guard status == noErr, let session else {
+                    print("Failed to create video decompression session: \(status)")
+                    return DR_NEED_IDR
+                }
+                // Ask the system to schedule decode work for real-time playback rather than
+                // throughput; visionOS is always busy rendering while we stream.
+                VTSessionSetProperty(session, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+
+                // Reconfiguring the audio session on every recovery IDR can stall playback.
+                if isFirstSession {
+                    AudioHelpers.fixAudioForSurroundForCurrentWindow()
+                }
             } else {
                 return DR_NEED_IDR
             }
@@ -845,13 +859,16 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
         dataPtr: UnsafeMutablePointer<UInt8>,
         length: Int32
     ) -> CMVideoFormatDescription? {
-        if let old = formatDesc {
-            formatDesc = nil
-        }
+        formatDesc = nil
+
+        // Parameter sets are resent with every IDR; don't let them pile up across IDRs.
+        defer { parameterSetBuffers.removeAll(keepingCapacity: true) }
 
         if (videoFormat & VIDEO_FORMAT_MASK_H264) != 0 {
+            guard parameterSetBuffers.count >= 2 else { return nil }
             return createH264FormatDescription()
         } else if (videoFormat & VIDEO_FORMAT_MASK_H265) != 0 {
+            guard parameterSetBuffers.count >= 3 else { return nil }
             return createHEVCFormatDescription()
         } else if (videoFormat & VIDEO_FORMAT_MASK_AV1) != 0 {
             let frameData = Data(bytesNoCopy: dataPtr, count: Int(length), deallocator: .none)
