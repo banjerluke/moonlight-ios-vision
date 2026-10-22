@@ -172,7 +172,6 @@ struct _RealityKitStreamView: View {
     @State private var surfaceMaterial: ShaderGraphMaterial?
     
     @State private var curveAnimationMultiplier: Float = 1.0
-    @State private var animationTimer: Timer?
     
     @State private var sliderCurvature: Float = 0.0
     @State private var tiltAngle: Float = 0.0
@@ -207,7 +206,6 @@ struct _RealityKitStreamView: View {
     @State private var statsTimer: Timer?
     @State private var showScaleHUD: Bool = false
     @State private var showModeLabel: Bool = false
-    @State private var modeLabelTimer: Timer?
     @State private var controlsHighlighted: Bool = false
     @State private var immersiveSpaceSceneID: String?
     @State private var showMenuPanel = false
@@ -216,7 +214,6 @@ struct _RealityKitStreamView: View {
     @State private var menuBaseWidth: Float = 0
     @State private var inputScaleInitialized = false
     @State private var inputBaseWidth: Float = 0
-    @State private var swapInProgress = false
     @State private var menuPanelInstanceID = UUID()
     @State private var showDimmingPicker = false
     @State private var inputMode: InputMode = .gazeControl // Three-mode input toggle (default: gaze control)
