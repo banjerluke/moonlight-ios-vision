@@ -653,13 +653,7 @@
         }
         
 #if TARGET_OS_VISION
-        // On visionOS, post for Swift to handle retry; Swift will call stopStream when needed
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"UIKitConnectionTerminatedForRetry" object:nil userInfo:@{@"title": title, @"message": message}];
-        // Stop stream so we can restart when Swift posts UIKitRequestStreamRestart
-        if (self->_streamMan) {
-            [self->_streamMan stopStream];
-            self->_streamMan = nil;
-        }
+        // StreamSession intercepts this callback on visionOS and reports it through its phase.
 #else
         UIAlertController* conTermAlert = [UIAlertController alertControllerWithTitle:title
                                                                               message:message
@@ -713,17 +707,7 @@
             message = [message stringByAppendingString:@"\n\nYour device's network connection is blocking Moonlight. Streaming may not work while connected to this network."];
         }
 #if TARGET_OS_VISION
-        if (self.uikitReconnectingForRetry) {
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"UIKitConnectionTerminatedForRetry" object:nil userInfo:@{@"title": @"Connection Failed", @"message": message}];
-            if (_streamMan) {
-                [_streamMan stopStream];
-                _streamMan = nil;
-            }
-        } else {
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"UIKitStreamErrorNotification" object:nil userInfo:@{@"title": @"Connection Failed", @"message": message}];
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"StreamStartFailed" object:nil];
-            [self returnToMainFrame];
-        }
+        // StreamSession intercepts this callback on visionOS and reports it through its phase.
 #else
         UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Connection Failed"
                                                                        message:message
@@ -745,22 +729,7 @@
     Log(LOG_I, @"Launch failed: %@", message);
 
 #if TARGET_OS_VISION
-    NSString *msg = message ?: @"Launch failed";
-    BOOL reconnecting = self.uikitReconnectingForRetry;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [UIApplication sharedApplication].idleTimerDisabled = NO;
-        if (reconnecting) {
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"UIKitConnectionTerminatedForRetry" object:nil userInfo:@{@"title": @"Connection Error", @"message": msg}];
-            if (self->_streamMan) {
-                [self->_streamMan stopStream];
-                self->_streamMan = nil;
-            }
-        } else {
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"UIKitStreamErrorNotification" object:nil userInfo:@{@"title": @"Connection Error", @"message": msg}];
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"StreamStartFailed" object:nil];
-            [self returnToMainFrame];
-        }
-    });
+    // StreamSession intercepts this callback on visionOS and reports it through its phase.
 #else
     [UIApplication sharedApplication].idleTimerDisabled = NO;
     UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Connection Error"

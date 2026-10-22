@@ -391,15 +391,6 @@ struct _RealityKitStreamView: View {
                     }
                 }
             }
-            .onReceive(NotificationCenter.default.publisher(for: .immersiveScreenWakeRequested)) { _ in
-                guard viewModel.activelyStreaming && !showMenuPanel else { return }
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    hideControls = false
-                    controlsHighlighted = true
-                }
-                startHighlightTimer()
-                fixAudioForCurrentMode()
-            }
             .onReceive(NotificationCenter.default.publisher(for: .resumeStreamFromMenu)) { _ in
                 guard viewModel.activelyStreaming else { return }
                 dismissWindow(id: "mainView")
@@ -2928,7 +2919,6 @@ struct _RealityKitStreamView: View {
 extension Notification.Name {
     static let mainViewWindowClosed = Notification.Name("MainViewWindowClosed")
     static let resumeStreamFromMenu = Notification.Name("ResumeStreamFromMenu")
-    static let immersiveScreenWakeRequested = Notification.Name("ImmersiveScreenWakeRequested")
 }
 
 let GAZE_VERTICAL_OFFSET: Float = 0.015

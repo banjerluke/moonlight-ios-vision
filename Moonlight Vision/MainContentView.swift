@@ -167,8 +167,6 @@ struct MainContentView: View {
                 viewModel.loadSavedHosts()
             }
             .onAppear {
-                NotificationCenter.default.post(name: Notification.Name("MainViewDidAppear"), object: nil)
-                
                 // Start mDNS discovery immediately when the host list appears —
                 // matching the behaviour of the original iOS/iPad Moonlight app
                 // (beginForegroundRefresh in viewWillAppear:).
