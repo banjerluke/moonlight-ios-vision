@@ -11,6 +11,8 @@
 #import "NSData+Conversion.h"
 #import "Moonlight-Swift.h"
 
+// visionOS parses AV1 with the FFmpeg-free Swift AV1Parser; FFmpeg is only linked on iOS/tvOS.
+#if !TARGET_OS_VISION
 #include <libavcodec/avcodec.h>
 #include <libavcodec/cbs.h>
 #include <libavcodec/cbs_av1.h>
@@ -20,6 +22,7 @@
 // Private libavformat API for writing the AV1 Codec Configuration Box
 extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
                               int write_seq_header);
+#endif
 
 @implementation VideoDecoderRenderer {
     StreamView* _view;
@@ -190,6 +193,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     }
 }
 
+#if !TARGET_OS_VISION
 - (NSData*)getAv1CodecConfigurationBox:(NSData*)frameData  {
     AVIOContext* ioctx = NULL;
     int err;
@@ -408,6 +412,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     ff_cbs_close(&cbsCtx);
     return formatDesc;
 }
+#endif
 
 // This function must free data for bufferType == BUFFER_TYPE_PICDATA
 - (int)submitDecodeBuffer:(unsigned char *)data length:(int)length bufferType:(int)bufferType decodeUnit:(PDECODE_UNIT)du
@@ -518,9 +523,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
             NSData* fullFrameData = [NSData dataWithBytesNoCopy:data length:length freeWhenDone:NO];
 
             Log(LOG_I, @"Constructing new AV1 format description");
-            // Prefer the FFmpeg-free Swift parser: the bundled FFmpeg libs may lack
-            // CONFIG_CBS_AV1, in which case ff_cbs_init() fails with EINVAL on every
-            // IDR frame and the stream never starts. FFmpeg remains the fallback.
+#if TARGET_OS_VISION
             CMVideoFormatDescriptionRef swiftDesc =
                 [AV1FormatDescriptionBridge formatDescriptionFromIDRFrame:fullFrameData
                                              masteringDisplayColorVolume:masteringDisplayColorVolume
@@ -528,10 +531,9 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
             if (swiftDesc != NULL) {
                 formatDesc = (CMVideoFormatDescriptionRef)CFRetain(swiftDesc);
             }
-            else {
-                Log(LOG_W, @"Swift AV1 parser failed, falling back to FFmpeg");
-                formatDesc = [self createAV1FormatDescriptionForIDRFrame:fullFrameData];
-            }
+#else
+            formatDesc = [self createAV1FormatDescriptionForIDRFrame:fullFrameData];
+#endif
         }
         else {
             // Unsupported codec!

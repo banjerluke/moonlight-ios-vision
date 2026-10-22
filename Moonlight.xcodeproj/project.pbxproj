@@ -29,7 +29,6 @@
 		3E265F532F9D87F000B0A566 /* LocalizationHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E265F522F9D87F000B0A566 /* LocalizationHelper.swift */; };
 		3E3791CA2ED2A4F5004B22A2 /* RealityKitStreamView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E3791C92ED2A4F5004B22A2 /* RealityKitStreamView.swift */; };
 		3E4F94692DC2E2D6006CF0C1 /* ComputerViewWrapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E4F94682DC2E2D6006CF0C1 /* ComputerViewWrapper.swift */; };
-		3E8100A72ED5666B0011CB9F /* AV1Helper.m in Sources */ = {isa = PBXBuildFile; fileRef = 3E8100A62ED5666B0011CB9F /* AV1Helper.m */; };
 		3E86FC1D2D4FFDF20016BB8E /* UpdatesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E86FC1C2D4FFDED0016BB8E /* UpdatesView.swift */; };
 		3E918AE42F9DB5FA00C71BA5 /* VelocitySlider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E918AE32F9DB5FA00C71BA5 /* VelocitySlider.swift */; };
 		3E9440F62D4EB9ED0047E0C2 /* OpenSSL in Frameworks */ = {isa = PBXBuildFile; productRef = 3E9440F52D4EB9ED0047E0C2 /* OpenSSL */; };
@@ -89,7 +88,6 @@
 		E77582CD2D53F3EB00948545 /* Shaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = E77582CC2D53F3E500948545 /* Shaders.metal */; };
 		E77582CF2D54020700948545 /* CVMetalHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = E77582CE2D54020300948545 /* CVMetalHelpers.swift */; };
 		E77582EB2D5550D500948545 /* AudioHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = E77582EA2D5550D200948545 /* AudioHelpers.swift */; };
-		5EB1A5E00000000000000002 /* FFmpegSwresampleStubs.c in Sources */ = {isa = PBXBuildFile; fileRef = 5EB1A5E00000000000000001 /* FFmpegSwresampleStubs.c */; };
 		F71801422B65483D00A9336B /* AppsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F71801412B65483D00A9336B /* AppsView.swift */; };
 		F71801442B654D9100A9336B /* TemporaryApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F71801432B654D9100A9336B /* TemporaryApp.swift */; };
 		F71801452B65583700A9336B /* TemporaryApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F71801432B654D9100A9336B /* TemporaryApp.swift */; };
@@ -149,17 +147,14 @@
 		F7A119432B5DDF73001E8686 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB290CF319B2C406004C83CF /* CoreGraphics.framework */; };
 		F7A119442B5DDF73001E8686 /* CoreData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB290CF719B2C406004C83CF /* CoreData.framework */; };
 		F7A119452B5DDF73001E8686 /* CoreMotion.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 98181BEC2791281100E43572 /* CoreMotion.framework */; };
-		F7A119462B5DDF73001E8686 /* libavformat.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 98882A052AF60F5300C5A11C /* libavformat.a */; };
 		F7A119482B5DDF73001E8686 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB290CF119B2C406004C83CF /* Foundation.framework */; };
 		F7A119492B5DDF73001E8686 /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB4679001A57048000377732 /* CoreFoundation.framework */; };
 		F7A1194A2B5DDF73001E8686 /* libSDL2.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 98181BE82791275D00E43572 /* libSDL2.a */; };
-		F7A1194B2B5DDF73001E8686 /* libavcodec.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 98882A032AF60F5300C5A11C /* libavcodec.a */; };
 		F7A1194E2B5DDF73001E8686 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = FB290CFC19B2C406004C83CF /* InfoPlist.strings */; };
 		F7A119502B5DDF73001E8686 /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FB290D0819B2C406004C83CF /* Images.xcassets */; };
 		F7A1195D2B5DE1FD001E8686 /* MainContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A1195C2B5DE1FD001E8686 /* MainContentView.swift */; };
 		F7A1195E2B5DE1FD001E8687 /* LanguagePromptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A1195F2B5DE1FD001E8687 /* LanguagePromptView.swift */; };
 		F7A119622B5DE1FD001E8689 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = F7A119662B5DE1FD001E868B /* Localizable.strings */; };
-		F7A119F62B5DE71C001E8686 /* libavutil.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 98882A042AF60F5300C5A11C /* libavutil.a */; };
 		F7A119F72B5DE725001E8686 /* libopus.a in Frameworks */ = {isa = PBXBuildFile; fileRef = FB8946EA19F6AFB800339C8A /* libopus.a */; };
 		F7A11A1E2B5DF457001E8686 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F7A11A1D2B5DF457001E8686 /* UIKit.framework */; };
 		F7A11A202B5DF46B001E8686 /* RealityKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F7A11A1F2B5DF46B001E8686 /* RealityKit.framework */; };
@@ -340,8 +335,6 @@
 		3E265F522F9D87F000B0A566 /* LocalizationHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationHelper.swift; sourceTree = "<group>"; };
 		3E3791C92ED2A4F5004B22A2 /* RealityKitStreamView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealityKitStreamView.swift; sourceTree = "<group>"; };
 		3E4F94682DC2E2D6006CF0C1 /* ComputerViewWrapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComputerViewWrapper.swift; sourceTree = "<group>"; };
-		3E8100A52ED566510011CB9F /* AV1Helper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AV1Helper.h; sourceTree = "<group>"; };
-		3E8100A62ED5666B0011CB9F /* AV1Helper.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = AV1Helper.m; sourceTree = "<group>"; };
 		3E86FC1C2D4FFDED0016BB8E /* UpdatesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdatesView.swift; sourceTree = "<group>"; };
 		3E918AE32F9DB5FA00C71BA5 /* VelocitySlider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VelocitySlider.swift; sourceTree = "<group>"; };
 		3EBD94A52F9D41190016D2AF /* MoonlightStreamActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoonlightStreamActivity.swift; sourceTree = "<group>"; };
@@ -404,7 +397,6 @@
 		E77582CC2D53F3E500948545 /* Shaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = Shaders.metal; sourceTree = "<group>"; };
 		E77582CE2D54020300948545 /* CVMetalHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CVMetalHelpers.swift; sourceTree = "<group>"; };
 		E77582EA2D5550D200948545 /* AudioHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioHelpers.swift; sourceTree = "<group>"; };
-		5EB1A5E00000000000000001 /* FFmpegSwresampleStubs.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = FFmpegSwresampleStubs.c; sourceTree = "<group>"; };
 		F1E2D3C4B5A6978869504132 /* StreamViewStubs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamViewStubs.swift; sourceTree = "<group>"; };
 		F71801412B65483D00A9336B /* AppsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppsView.swift; sourceTree = "<group>"; };
 		F71801432B654D9100A9336B /* TemporaryApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemporaryApp.swift; sourceTree = "<group>"; };
@@ -622,19 +614,16 @@
 				F7A119402B5DDF73001E8686 /* libmoonlight-common.a in Frameworks */,
 				F7A119432B5DDF73001E8686 /* CoreGraphics.framework in Frameworks */,
 				F7A119442B5DDF73001E8686 /* CoreData.framework in Frameworks */,
-				F7A119F62B5DE71C001E8686 /* libavutil.a in Frameworks */,
 				F718014F2B657DB600A9336B /* OrderedCollections in Frameworks */,
 				04C67C1F2EDE002500B41E6A /* RealityKitContent in Frameworks */,
 				F7A11A1E2B5DF457001E8686 /* UIKit.framework in Frameworks */,
 				F7A119452B5DDF73001E8686 /* CoreMotion.framework in Frameworks */,
-				F7A119462B5DDF73001E8686 /* libavformat.a in Frameworks */,
 				F7A11A202B5DF46B001E8686 /* RealityKit.framework in Frameworks */,
 				F7A119F72B5DE725001E8686 /* libopus.a in Frameworks */,
 				3E9440F62D4EB9ED0047E0C2 /* OpenSSL in Frameworks */,
 				F7A119482B5DDF73001E8686 /* Foundation.framework in Frameworks */,
 				F7A119492B5DDF73001E8686 /* CoreFoundation.framework in Frameworks */,
 				F7A1194A2B5DDF73001E8686 /* libSDL2.a in Frameworks */,
-				F7A1194B2B5DDF73001E8686 /* libavcodec.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -793,9 +782,6 @@
 				B10D61AE2D54D0F600550218 /* AppIntents */,
 				F71801412B65483D00A9336B /* AppsView.swift */,
 				E77582EA2D5550D200948545 /* AudioHelpers.swift */,
-				5EB1A5E00000000000000001 /* FFmpegSwresampleStubs.c */,
-				3E8100A52ED566510011CB9F /* AV1Helper.h */,
-				3E8100A62ED5666B0011CB9F /* AV1Helper.m */,
 				5924693D218D4AB18BB554DD /* AV1Parser.swift */,
 				D08CA15DC719441F8D881F87 /* SystemVideoRenderer.swift */,
 				F77B58B12B5EFC9000482BD5 /* ComputerView.swift */,
@@ -1457,7 +1443,6 @@
 				04F5ECAF2EE37A7F009FF87D /* StandardControlPanelView.swift in Sources */,
 				04F5ECB12EE37A80009FF87D /* VolumeControlPanelView.swift in Sources */,
 				E77582EB2D5550D500948545 /* AudioHelpers.swift in Sources */,
-				5EB1A5E00000000000000002 /* FFmpegSwresampleStubs.c in Sources */,
 				F7A119162B5DDF73001E8686 /* AppAssetRetriever.m in Sources */,
 				F7A119172B5DDF73001E8686 /* WakeOnLanManager.m in Sources */,
 				B1EDB1352D4D95A700EB1839 /* StreamControls.swift in Sources */,
@@ -1503,7 +1488,6 @@
 				3E265EE12F9D5BCA00B0A566 /* AudioStats.m in Sources */,
 				3E265EE22F9D5BCA00B0A566 /* CoreAudioRenderer.m in Sources */,
 				F7A4A4D62B61E2F2001591F3 /* TemporaryHost.swift in Sources */,
-				3E8100A72ED5666B0011CB9F /* AV1Helper.m in Sources */,
 				F7A1192C2B5DDF73001E8686 /* TemporarySettings.m in Sources */,
 				F71801442B654D9100A9336B /* TemporaryApp.swift in Sources */,
 				F7A1192D2B5DDF73001E8686 /* CryptoManager.m in Sources */,
@@ -1730,17 +1714,12 @@
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/libs/opus/lib",
-					"$(PROJECT_DIR)/libs/FFmpeg/lib/visionOS",
 					"$(PROJECT_DIR)/libs/SDL2/lib/visionOS",
 					"$(PROJECT_DIR)/libs/opus/lib/visionOS",
 				);
 				MARKETING_VERSION = 11.0.22;
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu99 gnu++11";
-				OTHER_LDFLAGS = (
-					"-Wl,-ld_classic",
-					"-liconv",
-					"-lz",
-				);
+				OTHER_LDFLAGS = "-Wl,-ld_classic";
 				PRODUCT_BUNDLE_IDENTIFIER = "com.moonlight-stream-beta.Moonlight-Vision-luma";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE = "";
@@ -1793,17 +1772,12 @@
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/libs/opus/lib",
-					"$(PROJECT_DIR)/libs/FFmpeg/lib/visionOS",
 					"$(PROJECT_DIR)/libs/SDL2/lib/visionOS",
 					"$(PROJECT_DIR)/libs/opus/lib/visionOS",
 				);
 				MARKETING_VERSION = 11.0.22;
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu99 gnu++11";
-				OTHER_LDFLAGS = (
-					"-Wl,-ld_classic",
-					"-liconv",
-					"-lz",
-				);
+				OTHER_LDFLAGS = "-Wl,-ld_classic";
 				PRODUCT_BUNDLE_IDENTIFIER = "com.moonlight-stream-beta.Moonlight-Vision-luma";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE = "";
@@ -2092,13 +2066,11 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/libs/opus/lib/visionOS",
 					"$(PROJECT_DIR)/libs/SDL2/lib/visionOS",
-					"$(PROJECT_DIR)/libs/FFmpeg/lib/visionOS",
 				);
 				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/libs/opus/lib/visionOS-Sim",
 					"$(PROJECT_DIR)/libs/SDL2/lib/visionOS-Sim",
-					"$(PROJECT_DIR)/libs/FFmpeg/lib/visionOS-Sim",
 				);
 				MARKETING_VERSION = 9.0.1;
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu99 gnu++11";
@@ -2146,13 +2118,11 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/libs/opus/lib/visionOS",
 					"$(PROJECT_DIR)/libs/SDL2/lib/visionOS",
-					"$(PROJECT_DIR)/libs/FFmpeg/lib/visionOS",
 				);
 				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/libs/opus/lib/visionOS-Sim",
 					"$(PROJECT_DIR)/libs/SDL2/lib/visionOS-Sim",
-					"$(PROJECT_DIR)/libs/FFmpeg/lib/visionOS-Sim",
 				);
 				MARKETING_VERSION = 9.0.1;
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu99 gnu++11";
