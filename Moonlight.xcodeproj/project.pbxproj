@@ -70,6 +70,10 @@
 		98CFB82F1CAD481B0048EF74 /* libmoonlight-common.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 98AB2E841CAD46840089BB98 /* libmoonlight-common.a */; };
 		98D585701C0ED0E800F6CC00 /* TemporarySettings.m in Sources */ = {isa = PBXBuildFile; fileRef = 98D5856F1C0ED0E800F6CC00 /* TemporarySettings.m */; };
 		A1B2C3D4E5F6A7B8C9D0E1F2 /* StreamViewStubs.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1E2D3C4B5A6978869504132 /* StreamViewStubs.swift */; };
+		0D2DE105AEB517F7A0B2C63D /* StreamLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB165A2D4FDBFFE81B611CBC /* StreamLauncher.swift */; };
+		29E54D85A7974FB44416BB00 /* StreamSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9E86037C399CFD0E46B8095 /* StreamSession.swift */; };
+		9AFAC15C72DB86185EA6E998 /* CurvedScreenMesh.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3A8575B3EFAD7B12D485F99 /* CurvedScreenMesh.swift */; };
+		DDAC79DD68EABC6DFC33988B /* PCModifierToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54E65CD1E243CFF4758D1317 /* PCModifierToolbar.swift */; };
 		B19362EE2D4ECDD6004F88FA /* NSData+Conversion.m in Sources */ = {isa = PBXBuildFile; fileRef = B19362ED2D4ECDCF004F88FA /* NSData+Conversion.m */; };
 		B19362EF2D4ECDD6004F88FA /* NSData+Conversion.m in Sources */ = {isa = PBXBuildFile; fileRef = B19362ED2D4ECDCF004F88FA /* NSData+Conversion.m */; };
 		B19362F02D4ECDD6004F88FA /* NSData+Conversion.m in Sources */ = {isa = PBXBuildFile; fileRef = B19362ED2D4ECDCF004F88FA /* NSData+Conversion.m */; };
@@ -401,6 +405,10 @@
 		E77582CE2D54020300948545 /* CVMetalHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CVMetalHelpers.swift; sourceTree = "<group>"; };
 		E77582EA2D5550D200948545 /* AudioHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioHelpers.swift; sourceTree = "<group>"; };
 		F1E2D3C4B5A6978869504132 /* StreamViewStubs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamViewStubs.swift; sourceTree = "<group>"; };
+		FB165A2D4FDBFFE81B611CBC /* StreamLauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamLauncher.swift; sourceTree = "<group>"; };
+		D9E86037C399CFD0E46B8095 /* StreamSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamSession.swift; sourceTree = "<group>"; };
+		C3A8575B3EFAD7B12D485F99 /* CurvedScreenMesh.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CurvedScreenMesh.swift; sourceTree = "<group>"; };
+		54E65CD1E243CFF4758D1317 /* PCModifierToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCModifierToolbar.swift; sourceTree = "<group>"; };
 		F71801412B65483D00A9336B /* AppsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppsView.swift; sourceTree = "<group>"; };
 		F71801432B654D9100A9336B /* TemporaryApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemporaryApp.swift; sourceTree = "<group>"; };
 		F71801492B655C1F00A9336B /* Utils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Utils.swift; sourceTree = "<group>"; };
@@ -818,6 +826,10 @@
 				B1EDB1332D4D95A700EB1839 /* StreamControls.swift */,
 				F71801582B72FF0000A9336B /* StreamModeSelectionOverlay.swift */,
 				F1E2D3C4B5A6978869504132 /* StreamViewStubs.swift */,
+				FB165A2D4FDBFFE81B611CBC /* StreamLauncher.swift */,
+				D9E86037C399CFD0E46B8095 /* StreamSession.swift */,
+				C3A8575B3EFAD7B12D485F99 /* CurvedScreenMesh.swift */,
+				54E65CD1E243CFF4758D1317 /* PCModifierToolbar.swift */,
 				B1EDB1342D4D95A700EB1839 /* UIKitStreamView.swift */,
 				3E86FC1C2D4FFDED0016BB8E /* UpdatesView.swift */,
 				6581B5F02D5434100022400F /* VideoTypes.swift */,
@@ -1455,6 +1467,10 @@
 				B1EDB1352D4D95A700EB1839 /* StreamControls.swift in Sources */,
 				C2769339D74B457E85143624 /* AV1Parser.swift in Sources */,
 				A1B2C3D4E5F6A7B8C9D0E1F2 /* StreamViewStubs.swift in Sources */,
+				0D2DE105AEB517F7A0B2C63D /* StreamLauncher.swift in Sources */,
+				29E54D85A7974FB44416BB00 /* StreamSession.swift in Sources */,
+				9AFAC15C72DB86185EA6E998 /* CurvedScreenMesh.swift in Sources */,
+				DDAC79DD68EABC6DFC33988B /* PCModifierToolbar.swift in Sources */,
 				B1EDB1362D4D95A700EB1839 /* DrawableVideoDecoder.swift in Sources */,
 				3E86FC1D2D4FFDF20016BB8E /* UpdatesView.swift in Sources */,
 				B1EDB1372D4D95A700EB1839 /* UIKitStreamView.swift in Sources */,

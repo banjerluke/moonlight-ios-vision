@@ -42,12 +42,13 @@ struct OpenMoonlightApp: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult {
         app.setHost(host)
-        guard let config = MainViewModel.shared.stream(app: app) else {
+        guard (host.activeAddress ?? host.address) != nil else {
             throw OpenStreamIntentError.streamConfigurationUnavailable
         }
+        // DummyView launches it through the same path as the app list.
+        MainViewModel.shared.pendingIntentApp = app
         let activity = NSUserActivity(activityType: "dummy")
         activity.targetContentIdentifier = "dummy" // IMPORTANT
-        try activity.setTypedPayload(config)
         UIApplication.shared.requestSceneSessionActivation(nil, userActivity: activity, options: nil)
         print("perform intent")
         return .result()

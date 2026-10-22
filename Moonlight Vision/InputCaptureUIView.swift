@@ -125,7 +125,7 @@ struct InputCaptureView: UIViewControllerRepresentable {
         uiViewController.fpsMouseCaptureEnabled = fpsMouseCapture
         
         // ONLY aggressively reclaim first responder if Mac Virtual Display mode is OFF
-        if !UserDefaults.standard.bool(forKey: "macVirtualDisplayExperimental") {
+        if !UserDefaults.standard.bool(forKey: .macVirtualDisplayExperimental) {
             if view.window != nil && !view.isFirstResponder && UIApplication.shared.applicationState == .active {
                 _ = view.becomeFirstResponder()
                 
@@ -498,7 +498,7 @@ class InputCaptureUIView: UIView, UIKeyInput {
     
     private func startFirstResponderMonitoring() {
         // ONLY start the timer if Mac Virtual Display mode is OFF
-        guard !UserDefaults.standard.bool(forKey: "macVirtualDisplayExperimental") else { return }
+        guard !UserDefaults.standard.bool(forKey: .macVirtualDisplayExperimental) else { return }
         
         // Periodically check and reclaim first responder if lost (needed for controller input)
         firstResponderCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -567,8 +567,9 @@ class InputCaptureUIView: UIView, UIKeyInput {
     
     func deleteBackward() {
         LiSendKeyboardEvent(0x08, 0x03, 0)
-        usleep(50 * 1000)
-        LiSendKeyboardEvent(0x08, 0x04, 0)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            LiSendKeyboardEvent(0x08, 0x04, 0)
+        }
     }
     
     // Handle special keys like Return/Enter

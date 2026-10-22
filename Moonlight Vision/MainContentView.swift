@@ -84,7 +84,10 @@ struct MainContentView: View {
                                 let dest = viewModel.getStreamDestination()
                                 switch dest {
                                 case .window(let id):
-                                    if let config = viewModel.savedStreamConfigForResume {
+                                    if let session = viewModel.activeSession, session.isLive {
+                                        openWindow(id: id, value: session.config)
+                                    } else if let config = viewModel.savedStreamConfigForResume {
+                                        viewModel.beginSession(config: config)
                                         openWindow(id: id, value: config)
                                     } else {
                                         openWindow(id: id)
@@ -99,16 +102,12 @@ struct MainContentView: View {
                         ToolbarItem(placement: .destructiveAction) {
                             Button(viewModel.localized("stop"), systemImage: "stop.circle.fill") {
                                 Task {
-                                    // Post notification first — RealityKitStreamView/UIKitStreamView
-                                    // receive it and call triggerCloseSequence/teardown which handles
-                                    // dismissing their own window. Avoid calling dismissWindow here for
-                                    // RealityKit volume streams: the stream view dismisses itself via
-                                    // triggerCloseSequence, and a second dismissWindow call racing with
-                                    // an in-flight window animation can cause intermittent crashes.
-                                    NotificationCenter.default.post(name: Notification.Name("RequestStreamCloseFromMainMenu"), object: nil)
+                                    // Stops the session and sets shouldCloseStream; RealityKitStreamView
+                                    // dismisses itself via triggerCloseSequence. Avoid calling dismissWindow
+                                    // here for RealityKit volume streams: a second dismissWindow call racing
+                                    // with an in-flight window animation can cause intermittent crashes.
                                     viewModel.userDidRequestDisconnect()
-                                    // Classic UIKit window doesn't observe the notification for self-dismiss,
-                                    // so we still need to dismiss it from here.
+                                    // The classic UIKit window is dismissed from here.
                                     if viewModel.streamSettings.renderer == .classic {
                                         dismissWindow(id: "classicStreamingWindow")
                                     }
@@ -168,8 +167,6 @@ struct MainContentView: View {
                 viewModel.loadSavedHosts()
             }
             .onAppear {
-                NotificationCenter.default.post(name: Notification.Name("MainViewDidAppear"), object: nil)
-                
                 // Start mDNS discovery immediately when the host list appears —
                 // matching the behaviour of the original iOS/iPad Moonlight app
                 // (beginForegroundRefresh in viewWillAppear:).

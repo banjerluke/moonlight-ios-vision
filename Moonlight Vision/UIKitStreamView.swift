@@ -20,30 +20,37 @@ struct UIKitStreamView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var hasPerformedTeardown = false
-    @State private var needsResume = false
-    @State private var reloadToken = UUID()
-    @State private var backgroundTask: Task<Void, Never>?
     @State private var windowSizeMonitorTask: Task<Void, Never>? = nil
     @State private var lastSavedWindowSize: CGSize? = nil
     @State private var lastStreamErrorMessage: String? = nil
-    @State private var uikitReconnectAttemptCount: Int = 0
-    @State private var isUIKitReconnecting: Bool = false
     @State private var uikitStatsOverlayText: String = ""
     @State private var isKeyboardActive: Bool = false
     @State private var showCenterHint: Bool = false
     @State private var centerHintText: String = ""
     @State private var centerHintIcon: String = "info.circle"
     @State private var centerHintTask: Task<Void, Never>?
-    private let uikitMaxReconnectAttempts = 3
-    private let uikitReconnectDelaySeconds: TimeInterval = 2.5
+
+    /// This window's session, if the model's active session is the one the window was opened for.
+    private var session: StreamSession? {
+        guard let config = streamConfig,
+              let session = viewModel.activeSession,
+              session.config.sessionUUID == config.sessionUUID else { return nil }
+        return session
+    }
+
+    private var reconnectAttempt: Int? {
+        if case .reconnecting(let attempt) = session?.phase { return attempt }
+        return nil
+    }
 
     var body: some View {
         Group {
             if viewModel.activelyStreaming,
-               let configBinding = Binding($streamConfig) {
-                _UIKitStreamView(streamConfig: configBinding)
-                    .id(reloadToken)
+               let configBinding = Binding($streamConfig),
+               let session {
+                _UIKitStreamView(session: session, streamConfig: configBinding)
+                    // One controller per session, so resuming with a new session starts it.
+                    .id(ObjectIdentifier(session))
                     .onAppear { lastStreamErrorMessage = nil }
                     .clipShape(RoundedRectangle(cornerRadius: CGFloat(viewModel.streamSettings.uikitWindowCornerRadius), style: .continuous))
                     .preferredSurroundingsEffect(
@@ -52,7 +59,7 @@ struct UIKitStreamView: View {
                     )
                     .persistentSystemOverlays(viewModel.streamSettings.dimPassthrough ? .hidden : .automatic)
                     .overlay {
-                        if isUIKitReconnecting {
+                        if reconnectAttempt != nil {
                             uikitReconnectingOverlay
                         }
                         if showCenterHint {
@@ -158,8 +165,6 @@ struct UIKitStreamView: View {
                         .padding(.bottom, 20)
                     }
                     .onAppear {
-                        hasPerformedTeardown = false
-                        
                         // Zombie / Resume Fix:
                         // If we appear but shouldn't be streaming, close immediately.
                         if !viewModel.activelyStreaming {
@@ -196,9 +201,6 @@ struct UIKitStreamView: View {
                     .onChange(of: viewModel.shouldCloseStream) { _, val in
                         if val { handleCloseFromViewModel() }
                     }
-                    .onReceive(NotificationCenter.default.publisher(for: Notification.Name("RequestStreamCloseFromMainMenu"))) { _ in
-                        handleCloseFromViewModel()
-                    }
                     .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ResumeStreamFromMenu"))) { _ in
                         dismissWindow(id: "mainView")
                         let currentMode = SpatialAudioMode(rawValue: viewModel.streamSettings.spatialAudioMode) ?? .window
@@ -224,14 +226,10 @@ struct UIKitStreamView: View {
                         
                         Button {
                             lastStreamErrorMessage = nil
-                            viewModel.streamState = .stopping
                             viewModel.savedStreamConfigForResume = nil
                             openWindow(id: "mainView")
                             dismissWindow(id: "classicStreamingWindow")
                             streamConfig = nil
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                NotificationCenter.default.post(name: Notification.Name("StreamDidTeardownNotification"), object: nil)
-                            }
                         } label: {
                             Label(viewModel.localized("open_main_menu"), systemImage: "house.fill")
                                 .frame(maxWidth: .infinity)
@@ -248,85 +246,10 @@ struct UIKitStreamView: View {
                 }
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("UIKitStreamErrorNotification"))) { notification in
-            if let msg = notification.userInfo?["message"] as? String {
-                lastStreamErrorMessage = msg
+        .onChange(of: session?.phase) { _, phase in
+            if case .ended(let end) = phase {
+                handleSessionEnded(end)
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("UIKitConnectionTerminatedForRetry"))) { notification in
-            DispatchQueue.main.async { handleUIKitConnectionTerminatedForRetry(notification: notification) }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("StreamFirstFrameShownNotification"))) { _ in
-            if uikitReconnectAttemptCount > 0 {
-                uikitReconnectAttemptCount = 0
-                isUIKitReconnecting = false
-                _UIKitStreamView.controllerReference.object?.uikitReconnectingForRetry = false
-            }
-        }
-    }
-    
-    private func handleUIKitConnectionTerminatedForRetry(notification: Notification) {
-        guard viewModel.activelyStreaming else { return }
-        let msg = (notification.userInfo?["message"] as? String) ?? viewModel.localized("unknown_error")
-        
-        if uikitReconnectAttemptCount < uikitMaxReconnectAttempts {
-            let configToUse = self.streamConfig
-            Task {
-                var isOnline = false
-                if let config = configToUse, let hostAddress = config.host,
-                   let host = viewModel.hosts.first(where: { $0.activeAddress == hostAddress || $0.address == hostAddress || $0.localAddress == hostAddress || $0.externalAddress == hostAddress }) {
-                    let httpManager = HttpManager(host: host)
-                    let serverInfoResponse = ServerInfoResponse()
-                    let request = HttpRequest(
-                        for: serverInfoResponse,
-                        with: httpManager?.newServerInfoRequest(false),
-                        fallbackError: 401,
-                        fallbackRequest: httpManager?.newHttpServerInfoRequest()
-                    )
-                    
-                    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                        DispatchQueue.global(qos: .userInitiated).async {
-                            httpManager?.executeRequestSynchronously(request)
-                            continuation.resume()
-                        }
-                    }
-                    isOnline = serverInfoResponse.isStatusOk()
-                } else {
-                    isOnline = true
-                }
-                
-                await MainActor.run {
-                    guard self.viewModel.activelyStreaming else { return }
-                    if isOnline {
-                        self.uikitReconnectAttemptCount += 1
-                        self.isUIKitReconnecting = true
-                        let streamVC = _UIKitStreamView.controllerReference.object
-                        streamVC?.uikitReconnectingForRetry = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + self.uikitReconnectDelaySeconds) {
-                            guard self.viewModel.activelyStreaming else {
-                                self.isUIKitReconnecting = false
-                                _UIKitStreamView.controllerReference.object?.uikitReconnectingForRetry = false
-                                return
-                            }
-                            NotificationCenter.default.post(name: Notification.Name("UIKitRequestStreamRestart"), object: nil)
-                        }
-                    } else {
-                        self.uikitReconnectAttemptCount = 0
-                        self.isUIKitReconnecting = false
-                        _UIKitStreamView.controllerReference.object?.uikitReconnectingForRetry = false
-                        self.lastStreamErrorMessage = msg
-                        _UIKitStreamView.controllerReference.object?.stopStream()
-                        NotificationCenter.default.post(name: Notification.Name("UIKitRetriesExhausted"), object: nil)
-                    }
-                }
-            }
-        } else {
-            uikitReconnectAttemptCount = 0
-            isUIKitReconnecting = false
-            _UIKitStreamView.controllerReference.object?.uikitReconnectingForRetry = false
-            lastStreamErrorMessage = msg
-            _UIKitStreamView.controllerReference.object?.stopStream()
-            NotificationCenter.default.post(name: Notification.Name("UIKitRetriesExhausted"), object: nil)
         }
     }
     
@@ -350,10 +273,6 @@ struct UIKitStreamView: View {
                 openWindow(id: "mainView")
                 dismissWindow(id: "classicStreamingWindow")
                 streamConfig = nil
-                viewModel.streamState = .stopping
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    NotificationCenter.default.post(name: Notification.Name("StreamDidTeardownNotification"), object: nil)
-                }
             } label: {
                 Label(viewModel.localized("open_main_menu"), systemImage: "house.fill")
                     .padding(.horizontal, 16)
@@ -375,7 +294,7 @@ struct UIKitStreamView: View {
             Text(viewModel.localized("reconnecting"))
                 .font(.headline)
                 .foregroundStyle(.white)
-            Text(String(format: viewModel.localized("reconnect_attempt"), uikitReconnectAttemptCount, uikitMaxReconnectAttempts))
+            Text(String(format: viewModel.localized("reconnect_attempt"), reconnectAttempt ?? 0, StreamSession.maxReconnectAttempts))
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.85))
         }
@@ -407,56 +326,49 @@ struct UIKitStreamView: View {
 
     private func handleHomeButtonClose() {
         print("[UIKitStreamView] Home button pressed.")
-        performUIKitTeardown()
+        performUIKitTeardown(.user)
     }
 
     private func handleCloseFromViewModel() {
-        performUIKitTeardown()
+        performUIKitTeardown(.user)
     }
 
-    private func performUIKitTeardown() {
-        guard !hasPerformedTeardown else { return }
-        hasPerformedTeardown = true
-        needsResume = false
-
-        let wasHidingForResume = viewModel.isHidingForResume
-        let isCurrentSession = (viewModel.currentStreamConfig.sessionUUID == streamConfig?.sessionUUID)
-        if isCurrentSession && viewModel.activelyStreaming && viewModel.streamState != .stopping {
-            if wasHidingForResume {
-                viewModel.isHidingForResume = false
-            } else {
-                // User closed the window via system controls.
-                // Implicitly save the config so they can resume via the Main Menu or App Intent.
-                viewModel.savedStreamConfigForResume = streamConfig
-            }
-        }
-        
-        AudioHelpers.resetAudioSession()
-
-        if let streamVC = _UIKitStreamView.controllerReference.object {
-            streamVC.stopStream()
-        }
+    private func performUIKitTeardown(_ reason: StreamSession.StopReason) {
+        guard let session, session.isLive else { return }
 
         if viewModel.streamSettings.rememberStreamSettings {
             saveWindowSizeForRestore()
         }
 
-        streamConfig = nil
+        // The session stops the stream and resets audio once it has really stopped; the window
+        // closes when the session ends.
+        session.stop(reason)
+    }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            dismissWindow(id: "classicStreamingWindow")
-            NotificationCenter.default.post(name: Notification.Name("StreamDidTeardownNotification"), object: nil)
+    private func handleSessionEnded(_ end: StreamSession.End) {
+        switch end {
+        case .stopped:
+            closeWindow()
+        case .startFailed(let message):
+            lastStreamErrorMessage = message
+            closeWindow()
+        case .connectionLost(let message):
+            lastStreamErrorMessage = message
+            _UIKitStreamView.controllerReference.object?.stopStream()
         }
     }
 
-    private func handleWindowDisappearance() {
-        // This handles when the user closes the window via the "X" bar or system gesture
-        guard !hasPerformedTeardown else { return }
+    private func closeWindow() {
+        _UIKitStreamView.controllerReference.object?.stopStream()
+        streamConfig = nil
+        dismissWindow(id: "classicStreamingWindow")
+    }
 
-        // If we are disappearing but activelyStreaming is true, it means the user closed the window manually.
-        // We should clean up the stream logic.
+    private func handleWindowDisappearance() {
+        // This handles when the user closes the window via the "X" bar or system gesture.
+        // If we are disappearing but activelyStreaming is true, the user closed the window manually.
         if viewModel.activelyStreaming {
-            performUIKitTeardown()
+            performUIKitTeardown(.windowClosed)
         }
     }
     
@@ -480,8 +392,8 @@ struct UIKitStreamView: View {
         }
         
         let defaults = UserDefaults.standard
-        defaults.set(size.width, forKey: "uikitWindowWidth")
-        defaults.set(size.height, forKey: "uikitWindowHeight")
+        defaults.set(size.width, forKey: .uikitWindowWidth)
+        defaults.set(size.height, forKey: .uikitWindowHeight)
         lastSavedWindowSize = size
         print("Saved UIKit window size to UserDefaults: \(size)")
     }
@@ -523,18 +435,12 @@ struct UIKitStreamView: View {
     }
     
     private func prepareForBackground() {
-        guard !hasPerformedTeardown else { return }
-        guard streamConfig != nil else { return }
+        guard let session, session.isLive else { return }
         
         saveCurrentWindowSize()
-        backgroundTask?.cancel()
-        needsResume = true
-        
-        AudioHelpers.resetAudioSession()
-        
-        if let streamVC = _UIKitStreamView.controllerReference.object {
-            streamVC.stopStream()
-        }
+        // The session stops the stream and resets audio once it has really stopped.
+        session.suspend()
+        _UIKitStreamView.controllerReference.object?.stopStream()
     }
     
     private func saveCurrentWindowSize() {
@@ -547,25 +453,9 @@ struct UIKitStreamView: View {
     }
 
     private func resumeIfNeeded() {
-        guard needsResume else { return }
-        guard streamConfig != nil else { return }
-        
-        backgroundTask?.cancel()
-        
-        backgroundTask = Task {
-            guard !Task.isCancelled else { return }
-            guard needsResume else { return }
-            
-            await MainActor.run {
-                needsResume = false
-                if let streamVC = _UIKitStreamView.controllerReference.object {
-                    streamVC.streamConfig = streamConfig
-                    streamVC.startStream()
-                } else {
-                    reloadToken = UUID()
-                }
-            }
-        }
+        // Reconnects once the background stop has really finished.
+        guard let session, session.phase == .suspended else { return }
+        session.resume()
     }
 }
 
@@ -624,6 +514,7 @@ struct _UIKitStreamViewWindowButton: View {
 struct _UIKitStreamView: UIViewControllerRepresentable {
     typealias UIViewControllerType = StreamFrameViewController
 
+    let session: StreamSession
     @Binding var streamConfig: StreamConfiguration
     static let controllerReference = Reference<UIViewControllerType>()
 
@@ -649,14 +540,62 @@ struct _UIKitStreamView: UIViewControllerRepresentable {
         streamView.disconnectedCallback = {
             print("Disconnected in Swift!")
         };
+        streamView.statsTextProvider = { [weak session] in
+            MainActor.assumeIsolated { session?.statsOverlayText() }
+        }
         _UIKitStreamView.controllerReference.object = streamView
+        let port = Self.sessionPort(for: streamView, session: session)
+        // Start outside the view update that's creating the controller.
+        DispatchQueue.main.async { [session] in
+            session.start(port: port)
+        }
         return streamView
+    }
+
+    private static func sessionPort(for controller: StreamFrameViewController, session: StreamSession) -> StreamSession.Port {
+        let config = session.config
+        return StreamSession.Port(
+            callbacks: controller,
+            controllerDelegate: SessionControllerDelegate(controller: controller) { [weak session] in
+                Task { @MainActor in session?.stop(.user) }
+            },
+            startDelay: 1.2,
+            prepareAttempt: { controllerSupport, callbacks in
+                controller.streamConfig = config
+                let makeRenderer = controller.prepareStreamAttempt(with: controllerSupport, callbacks: callbacks)!
+                return { makeRenderer()! }
+            }
+        )
     }
 
     func updateUIViewController(_ viewController: UIViewControllerType, context: Context) {
         viewController.streamConfig = streamConfig
         viewController.fpsMouseCaptureEnabled = MainViewModel.shared.streamSettings.fpsMouseCapture
         _UIKitStreamView.controllerReference.object = viewController
+    }
+}
+
+/// Forwards controller presence changes to the stream view controller, and turns the gamepad
+/// exit combo into a session stop so the window closes.
+private final class SessionControllerDelegate: NSObject, ControllerSupportDelegate {
+    private weak var controller: StreamFrameViewController?
+    private let onExitRequested: () -> Void
+
+    init(controller: StreamFrameViewController, onExitRequested: @escaping () -> Void) {
+        self.controller = controller
+        self.onExitRequested = onExitRequested
+    }
+
+    func gamepadPresenceChanged() {
+        controller?.gamepadPresenceChanged()
+    }
+
+    func mousePresenceChanged() {
+        controller?.mousePresenceChanged()
+    }
+
+    func streamExitRequested() {
+        onExitRequested()
     }
 }
 
@@ -689,8 +628,8 @@ func applyAspectRatioLock(streamConfig: StreamConfiguration, targetWindow: UIWin
         
         if desiredSize == .zero {
             let defaults = UserDefaults.standard
-            if let savedWidth = defaults.object(forKey: "uikitWindowWidth") as? CGFloat,
-               let savedHeight = defaults.object(forKey: "uikitWindowHeight") as? CGFloat {
+            if let savedWidth = defaults.object(forKey: .uikitWindowWidth) as? CGFloat,
+               let savedHeight = defaults.object(forKey: .uikitWindowHeight) as? CGFloat {
                 let savedSize = CGSize(width: savedWidth, height: savedHeight)
                 let savedAspectRatio = savedSize.width / savedSize.height
                 let aspectRatioDifference = abs(savedAspectRatio - streamAspectRatio) / streamAspectRatio

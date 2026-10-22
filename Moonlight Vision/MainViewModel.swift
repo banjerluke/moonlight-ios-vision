@@ -9,6 +9,7 @@
 //  Copyright © 2024 Moonlight Game Streaming Project. All rights reserved.
 //
 
+import Combine
 import Foundation
 import OrderedCollections
 import VideoToolbox
@@ -42,11 +43,35 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
     @Published var currentStreamConfig = StreamConfiguration()
     @Published var activelyStreaming = false
     @Published var shouldCloseStream = false
-    @Published var streamState: StreamLifecycleState = .idle
+    /// The current stream's connection. Replaced by `beginSession`; kept after it ends so the
+    /// stream views can show how it ended.
+    @Published private(set) var activeSession: StreamSession? {
+        didSet {
+            // Views read the session through this model, so republish its changes.
+            activeSessionObservation = activeSession?.objectWillChange.sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+        }
+    }
+    private var activeSessionObservation: AnyCancellable?
+
+    /// Derived from the active session, which is the only thing that moves the stream lifecycle.
+    var streamState: StreamLifecycleState {
+        guard let activeSession else { return .idle }
+        switch activeSession.phase {
+        case .idle, .connecting:
+            return .starting
+        case .running, .reconnecting, .suspended:
+            return .running
+        case .stopping:
+            return .stopping
+        case .ended:
+            return .idle
+        }
+    }
     @Published var activeSessionToken: String = ""
     @Published var currentlyStreamingAppId: String? = nil
     @Published var reconnectCooldownUntil: Date? = nil
-    @Published var isSwappingRenderers: Bool = false
     
     @Published var showLanguagePrompt = false
     @Published var streamSettings: TemporarySettings
@@ -64,7 +89,8 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
     @Published var isHidingForResume: Bool = false
     
     // Stream launch management
-    @Published var pendingAppToStream: TemporaryApp? = nil
+    /// An App Intent's app, waiting for the intent's scene to launch it through StreamLauncher.
+    var pendingIntentApp: TemporaryApp? = nil
     @Published var showActiveStreamAlert = false
     @Published var showClassicWindowCloseAlert = false
     @Published var showRealityWindowCloseAlert = false
@@ -73,7 +99,6 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
     @Published var immersiveImmersionStyle: ImmersionStyle = .mixed
 #endif
     
-    private let languagePromptDefaultsKey = "didCompleteLanguagePrompt"
 
     @Published var volumeSliderValue: Float = 1.0
 
@@ -99,93 +124,16 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
         clientCert = CryptoManager.readCertFromFile()
         uniqueId = IdManager.getUniqueId()
         streamSettings = dataManager.getSettings()
-        showLanguagePrompt = !UserDefaults.standard.bool(forKey: languagePromptDefaultsKey)
+        showLanguagePrompt = !UserDefaults.standard.bool(forKey: .didCompleteLanguagePrompt)
 
         super.init()
         appManager = AppAssetManager(callback: self)
         discoveryManager = DiscoveryManager(hosts: hosts, andCallback: self)
         
-        // Observe first-frame and teardown events to drive lifecycle state
-        let center = NotificationCenter.default
-        center.addObserver(forName: Notification.Name("StreamFirstFrameShownNotification"), object: nil, queue: .main) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor in
-                guard self.streamState == .starting else { return }
-                self.streamState = .running
-            }
-        }
-        center.addObserver(forName: Notification.Name("RKStreamFirstFrameShown"), object: nil, queue: .main) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor in
-                guard self.streamState == .starting else { return }
-                self.streamState = .running
-            }
-        }
-        center.addObserver(forName: Notification.Name("StreamDidTeardownNotification"), object: nil, queue: .main) { [weak self] _ in
-            self?.onTeardownComplete()
-        }
-        center.addObserver(forName: Notification.Name("RKStreamDidTeardown"), object: nil, queue: .main) { [weak self] _ in
-            self?.onTeardownComplete()
-        }
-        center.addObserver(forName: Notification.Name("StreamStartFailed"), object: nil, queue: .main) { [weak self] _ in
-            self?.onStreamStartFailed()
-        }
-        center.addObserver(forName: Notification.Name("UIKitRetriesExhausted"), object: nil, queue: .main) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor in
-                self.activelyStreaming = false
-            }
-        }
-        center.addObserver(forName: Notification.Name("RealityKitRetriesExhausted"), object: nil, queue: .main) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor in
-                if self.streamState == .running || self.streamState == .starting {
-                    self.streamState = .stopping
-                }
-                self.activelyStreaming = false
-            }
-        }
-        center.addObserver(forName: Notification.Name("ConnectionLost"), object: nil, queue: .main) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor in
-                if self.streamState == .running || self.streamState == .starting {
-                    self.streamState = .stopping
-                    self.shouldCloseStream = true
-                }
-            }
-        }
-    }
-    
-    private func onTeardownComplete() {
-        Task { @MainActor in
-            guard streamState == .stopping else { return }
-            shouldCloseStream = false
-            currentlyStreamingAppId = nil
-            streamState = .idle
-            reconnectCooldownUntil = nil
-            if !isSwappingRenderers {
-                activelyStreaming = false
-            }
-        }
-    }
-    
-    private func onStreamStartFailed() {
-        Task { @MainActor in
-            guard streamState == .starting else { return }
-            streamState = .stopping
-            shouldCloseStream = true
-            reconnectCooldownUntil = nil
-            if !isSwappingRenderers {
-                activelyStreaming = false
-            }
-        }
     }
     
     func prepareForNewStream() {
         activeSessionToken = UUID().uuidString
-        if streamState == .stopping {
-            streamState = .idle
-        }
         if shouldCloseStream { shouldCloseStream = false }
         if activelyStreaming && streamState == .idle {
             activelyStreaming = false
@@ -193,20 +141,16 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
         if let cooldown = reconnectCooldownUntil, cooldown.timeIntervalSinceNow <= 0 {
             reconnectCooldownUntil = nil
         }
-        if isSwappingRenderers && streamState == .idle {
-            isSwappingRenderers = false
-        }
     }
     
     func userDidRequestDisconnect() {
         activelyStreaming = false
-        DispatchQueue.main.async { self.beginDisconnect() }
-    }
-    
-    private func beginDisconnect() {
-        guard streamState == .running || streamState == .starting else { return }
-        streamState = .stopping
+        guard let session = activeSession, session.isLive else { return }
+        // Stop now, before the caller dismisses any stream window. The stream views close
+        // themselves when they see shouldCloseStream.
+        session.stop(.user)
         beginReconnectCooldown(1.5)
+        shouldCloseStream = true
         if let appId = currentlyStreamingAppId,
            let host = hosts.first(where: { $0.appList.contains(where: { $0.id == appId || $0.name == appId }) }) {
             let httpManager = HttpManager(host: host)
@@ -214,15 +158,6 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
             let quitRequest = HttpRequest(for: httpResponse, with: httpManager?.newQuitAppRequest())
             DispatchQueue.global(qos: .userInitiated).async {
                 httpManager?.executeRequestSynchronously(quitRequest)
-                DispatchQueue.main.async {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        self.shouldCloseStream = true
-                    }
-                }
-            }
-        } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                self.shouldCloseStream = true
             }
         }
     }
@@ -240,45 +175,39 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
         reconnectCooldownRemaining() <= 0
     }
 
+    /// Waits for a stopping session to end, or for `timeout`.
     func waitForTeardown(timeout: TimeInterval = 1.5) async {
-        guard streamState == .stopping else { return }
+        guard let session = activeSession, session.phase == .stopping else { return }
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            let center = NotificationCenter.default
-            var fired = false
-            var obs1: NSObjectProtocol?
-            var obs2: NSObjectProtocol?
-            var obs3: NSObjectProtocol?
-
-            func cleanup(label: String, timedOut: Bool = false) {
-                if fired { return }
-                fired = true
-                if let o = obs1 { center.removeObserver(o) }
-                if let o = obs2 { center.removeObserver(o) }
-                if let o = obs3 { center.removeObserver(o) }
-                Task { @MainActor in
-                    if timedOut { print("[Lifecycle] Teardown wait timed out") }
-                    if streamState == .stopping { streamState = .idle }
-                    cont.resume()
-                }
+            var finished = false
+            var observation: AnyCancellable?
+            let finish = {
+                guard !finished else { return }
+                finished = true
+                observation?.cancel()
+                cont.resume()
             }
-
-            obs1 = center.addObserver(forName: Notification.Name("StreamDidTeardownNotification"), object: nil, queue: .main) { _ in cleanup(label: "StreamDidTeardown") }
-            obs2 = center.addObserver(forName: Notification.Name("RKStreamDidTeardown"), object: nil, queue: .main) { _ in cleanup(label: "RKStreamDidTeardown") }
-            obs3 = center.addObserver(forName: Notification.Name("StreamStartFailed"), object: nil, queue: .main) { _ in cleanup(label: "StreamStartFailed") }
-
+            observation = session.$phase.sink { phase in
+                if case .ended = phase { finish() }
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
-                cleanup(label: "timeout", timedOut: true)
+                if !finished { print("[Lifecycle] Teardown wait timed out") }
+                finish()
             }
         }
     }
 
-    /// Fallback for cases where stream view vanished (e.g. crown exit) and teardown
-    /// notifications are missed, leaving lifecycle state stuck and blocking new launches.
+    /// Fallback for cases where the stream view vanished (e.g. crown exit) without stopping its
+    /// session, leaving lifecycle state stuck and blocking new launches.
     func forceResetStreamLifecycleIfNeeded() {
         if streamState != .idle {
             print("[Lifecycle] Force-reset stream lifecycle from \(streamState.rawValue) to idle")
         }
-        streamState = .idle
+        // Detach the session so its end no longer touches this model; the next connection waits
+        // for its connection to stop.
+        let stuck = activeSession
+        activeSession = nil
+        stuck?.stop(.user)
         shouldCloseStream = false
         currentlyStreamingAppId = nil
         reconnectCooldownUntil = nil
@@ -652,10 +581,47 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
      
     // MARK: - Stream Control
 
+    /// Creates the session a stream window or space will run. Call before opening it.
+    @discardableResult
+    func beginSession(config: StreamConfiguration) -> StreamSession {
+        let session = StreamSession(config: config, host: host(for: config))
+        session.onEnded = { [weak self, weak session] end in
+            guard let self, let session else { return }
+            self.sessionEnded(session, end)
+        }
+        activeSession = session
+        activelyStreaming = true
+        shouldCloseStream = false
+        return session
+    }
+
+    /// Where a stream's end lands in the app: the resume config and the stream flags.
+    private func sessionEnded(_ session: StreamSession, _ end: StreamSession.End) {
+        guard session === activeSession else { return }
+        if end == .stopped(.windowClosed) {
+            // The window or space went away without an explicit stop. Home has already saved the
+            // config; otherwise save it so the stream can be resumed from the main menu or App Intent.
+            if isHidingForResume {
+                isHidingForResume = false
+            } else {
+                savedStreamConfigForResume = session.config
+            }
+        }
+        currentlyStreamingAppId = nil
+        reconnectCooldownUntil = nil
+        activelyStreaming = false
+    }
+
+    /// The saved host a stream config points at, matched on any of its addresses.
+    func host(for config: StreamConfiguration) -> TemporaryHost? {
+        guard let address = config.host else { return nil }
+        return hosts.first {
+            $0.activeAddress == address || $0.address == address || $0.localAddress == address || $0.externalAddress == address
+        }
+    }
+
     func stream(app: TemporaryApp) -> StreamConfiguration? {
-        prepareForNewStream()
         let config = StreamConfiguration()
-        config.sessionUUID = activeSessionToken
 
         guard let host = app.host() else {
             print("stream - ERROR: App \(app.name) has no associated host.")
@@ -670,6 +636,8 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
             return nil
         }
 
+        prepareForNewStream()
+        config.sessionUUID = activeSessionToken
         config.httpsPort = host.httpsPort
         config.appID = app.id
         config.appName = app.name
@@ -743,8 +711,7 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
         print("stream - Final supportedVideoFormats: \(String(format: "0x%04X", config.supportedVideoFormats))")
 
         currentStreamConfig = config
-        activelyStreaming = true
-        streamState = .starting
+        beginSession(config: config)
         currentlyStreamingAppId = app.id ?? app.name
         print("stream - Stream configuration complete. Ready to start streaming.")
         return currentStreamConfig
@@ -754,7 +721,7 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
         streamSettings.appLanguage = language
         streamSettings.save()
         showLanguagePrompt = false
-        UserDefaults.standard.set(true, forKey: languagePromptDefaultsKey)
+        UserDefaults.standard.set(true, forKey: .didCompleteLanguagePrompt)
         // Trigger view update by publishing language change
         objectWillChange.send()
     }

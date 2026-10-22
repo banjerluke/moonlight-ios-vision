@@ -58,6 +58,10 @@
 - (void)stopStream {
     Log(LOG_I, @"StreamFrameViewController: stopStream() called from SwiftUI.");
 
+#if TARGET_OS_VISION
+    // The StreamSession stops the connection and cleans up ControllerSupport; just let go of it.
+    _controllerSupport = nil;
+#else
     if (_streamMan) {
         [_streamMan stopStream];
         _streamMan = nil;
@@ -67,6 +71,7 @@
         [_controllerSupport cleanup];
         _controllerSupport = nil;
     }
+#endif
 
     if (_statsUpdateTimer) {
         [_statsUpdateTimer invalidate];
@@ -78,7 +83,9 @@
         _inactivityTimer = nil;
     }
 
+#if !TARGET_OS_VISION
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+#endif
 
     if (_streamView) {
         [_streamView removeFromSuperview];
@@ -101,6 +108,9 @@
 }
 
 - (void)startStream {
+#if TARGET_OS_VISION
+    // The StreamSession starts and resumes the connection on visionOS.
+#else
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self->_streamMan == nil && self->_streamConfig != nil) {
             Log(LOG_I, @"StreamFrameViewController: startStream() called from SwiftUI. Resuming stream...");
@@ -109,6 +119,7 @@
             Log(LOG_W, @"StreamFrameViewController: startStream() ignored (streamMan exists: %d, streamConfig exists: %d)", self->_streamMan != nil, self->_streamConfig != nil);
         }
     });
+#endif
 }
 
 - (void)viewDidAppear:(BOOL)animated
@@ -169,11 +180,16 @@
     [_stageLabel.topAnchor constraintEqualToAnchor:_spinner.bottomAnchor constant:20.0].active = YES;
     [_stageLabel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor].active = YES;
 
+#if !TARGET_OS_VISION
     _controllerSupport = [[ControllerSupport alloc] initWithConfig:self.streamConfig delegate:self];
+#endif
     _inactivityTimer = nil;
     
+#if !TARGET_OS_VISION
+    // On visionOS the stream view is created per connection attempt, with the session's ControllerSupport.
     _streamView = [[StreamView alloc] initWithFrame:self.view.frame];
     [_streamView setupStreamView:_controllerSupport interactionDelegate:self config:self.streamConfig];
+#endif
     self.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     _streamView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
 #if TARGET_OS_TV
@@ -220,9 +236,11 @@
     [_tipLabel.topAnchor constraintEqualToAnchor:_stageLabel.bottomAnchor constant:20.0].active = YES;
     [_tipLabel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor].active = YES;
 
+#if !TARGET_OS_VISION
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self startStreamManager];
     });
+#endif
     
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(applicationWillResignActive:)
@@ -240,10 +258,6 @@
                                                object: nil];
 
 #if TARGET_OS_VISION
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(uikitRequestStreamRestart:)
-                                                 name:@"UIKitRequestStreamRestart"
-                                               object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(uikitStatsOverlayChanged:)
                                                  name:@"UIKitStatsOverlayChanged"
@@ -280,12 +294,16 @@
 #endif
         
         // Add StreamView inside a UIScrollView for absolute mode
+#if !TARGET_OS_VISION
         [_scrollView addSubview:_streamView];
+#endif
         [self.view addSubview:_scrollView];
     }
     else {
         // Add StreamView directly in relative mode
+#if !TARGET_OS_VISION
         [self.view addSubview:_streamView];
+#endif
     }
 }
 
@@ -344,7 +362,11 @@
 #endif
 
 - (void)updateStatsOverlay {
+#if TARGET_OS_VISION
+    NSString* overlayText = self.statsTextProvider ? self.statsTextProvider() : nil;
+#else
     NSString* overlayText = [self->_streamMan getStatsOverlayText];
+#endif
     
     dispatch_async(dispatch_get_main_queue(), ^{
 #if TARGET_OS_VISION
@@ -420,12 +442,12 @@
 }
 
 #if TARGET_OS_VISION
-- (void) startStreamManager {
-    if (_streamMan != nil) return;
-    if (!_streamConfig) return;
-    
-    if (_controllerSupport == nil) {
-        _controllerSupport = [[ControllerSupport alloc] initWithConfig:self.streamConfig delegate:self];
+- (id<AnyVideoDecoderRenderer> (^)(void))prepareStreamAttemptWithControllerSupport:(ControllerSupport*)controllerSupport callbacks:(id<ConnectionCallbacks>)callbacks {
+    // Each attempt gets a fresh ControllerSupport, so rebuild the stream view around it.
+    if (_controllerSupport != controllerSupport) {
+        _controllerSupport = controllerSupport;
+        [_streamView removeFromSuperview];
+        _streamView = nil;
     }
     
     if (_streamView == nil) {
@@ -441,36 +463,18 @@
         }
     }
     
-    _streamMan = [[StreamManager alloc] initWithConfig:_streamConfig
-                                       rendererProvider:^id<AnyVideoDecoderRenderer> __strong {
-        return [[VideoDecoderRenderer alloc] initWithView:self->_streamView callbacks:self streamAspectRatio:(float)self.streamConfig.width / (float)self.streamConfig.height useFramePacing:self.streamConfig.useFramePacing];
-    }
-                                    connectionCallbacks:self];
-    if (!_opQueue) {
-        _opQueue = [[NSOperationQueue alloc] init];
-    }
-    [_opQueue addOperation:_streamMan];
-}
-
-- (void) uikitRequestStreamRestart:(NSNotification*)notification {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (self->_streamMan != nil) {
-            [self->_streamMan stopStream];
-            self->_streamMan = nil;
-        }
-        // Wait 1.2s for Connection/LiStopConnection to fully teardown before starting new stream
-        // (avoids initLock timeout / crash when new connection starts too soon)
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (!self->_streamConfig || !self->_streamView) return;
-            [self startStreamManager];
-        });
-    });
+    StreamView *streamView = _streamView;
+    float aspectRatio = (float)self.streamConfig.width / (float)self.streamConfig.height;
+    BOOL useFramePacing = self.streamConfig.useFramePacing;
+    return ^id<AnyVideoDecoderRenderer> {
+        return [[VideoDecoderRenderer alloc] initWithView:streamView callbacks:callbacks streamAspectRatio:aspectRatio useFramePacing:useFramePacing];
+    };
 }
 
 - (void) uikitStatsOverlayChanged:(NSNotification*)notification {
     BOOL enabled = [notification.userInfo[@"enabled"] boolValue];
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (enabled && self->_streamMan != nil) {
+        if (enabled && self->_streamView != nil) {
             if (self->_statsUpdateTimer == nil) {
                 self->_statsUpdateTimer = [NSTimer scheduledTimerWithTimeInterval:1.0f
                                                                            target:self
@@ -577,9 +581,6 @@
         if (self->_connectedCallback) {
             self->_connectedCallback();
         }
-#if TARGET_OS_VISION
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"StreamFirstFrameShownNotification" object:nil];
-#endif
     });
 }
 
@@ -652,13 +653,7 @@
         }
         
 #if TARGET_OS_VISION
-        // On visionOS, post for Swift to handle retry; Swift will call stopStream when needed
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"UIKitConnectionTerminatedForRetry" object:nil userInfo:@{@"title": title, @"message": message}];
-        // Stop stream so we can restart when Swift posts UIKitRequestStreamRestart
-        if (self->_streamMan) {
-            [self->_streamMan stopStream];
-            self->_streamMan = nil;
-        }
+        // StreamSession intercepts this callback on visionOS and reports it through its phase.
 #else
         UIAlertController* conTermAlert = [UIAlertController alertControllerWithTitle:title
                                                                               message:message
@@ -712,17 +707,7 @@
             message = [message stringByAppendingString:@"\n\nYour device's network connection is blocking Moonlight. Streaming may not work while connected to this network."];
         }
 #if TARGET_OS_VISION
-        if (self.uikitReconnectingForRetry) {
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"UIKitConnectionTerminatedForRetry" object:nil userInfo:@{@"title": @"Connection Failed", @"message": message}];
-            if (_streamMan) {
-                [_streamMan stopStream];
-                _streamMan = nil;
-            }
-        } else {
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"UIKitStreamErrorNotification" object:nil userInfo:@{@"title": @"Connection Failed", @"message": message}];
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"StreamStartFailed" object:nil];
-            [self returnToMainFrame];
-        }
+        // StreamSession intercepts this callback on visionOS and reports it through its phase.
 #else
         UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Connection Failed"
                                                                        message:message
@@ -744,22 +729,7 @@
     Log(LOG_I, @"Launch failed: %@", message);
 
 #if TARGET_OS_VISION
-    NSString *msg = message ?: @"Launch failed";
-    BOOL reconnecting = self.uikitReconnectingForRetry;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [UIApplication sharedApplication].idleTimerDisabled = NO;
-        if (reconnecting) {
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"UIKitConnectionTerminatedForRetry" object:nil userInfo:@{@"title": @"Connection Error", @"message": msg}];
-            if (self->_streamMan) {
-                [self->_streamMan stopStream];
-                self->_streamMan = nil;
-            }
-        } else {
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"UIKitStreamErrorNotification" object:nil userInfo:@{@"title": @"Connection Error", @"message": msg}];
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"StreamStartFailed" object:nil];
-            [self returnToMainFrame];
-        }
-    });
+    // StreamSession intercepts this callback on visionOS and reports it through its phase.
 #else
     [UIApplication sharedApplication].idleTimerDisabled = NO;
     UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Connection Error"

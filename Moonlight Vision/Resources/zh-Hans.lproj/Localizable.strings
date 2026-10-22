@@ -72,6 +72,7 @@
 "stream_stopped_message" = "在返回主菜单前请先关闭此窗口，之后即可在主菜单重新启动串流。";
 "reconnecting" = "正在重连…";
 "reconnect_attempt" = "第 %d/%d 次尝试";
+"previous_stream_still_stopping" = "上一个串流仍在关闭。请重试；如果问题持续，请重启 Moonlight。";
 "open_main_menu" = "打开主菜单";
 "resume_stream" = "返回串流";
 "stream_error" = "串流错误";
@@ -237,14 +238,7 @@
 "dim_night" = "夜间";
 "dim_reactive_v1" = "自适应 V1";
 "dim_eclipse" = "日食";
-"dim_midnight" = "午夜";
-"dim_twilight" = "黄昏";
-"dim_dawn" = "黎明";
-"dim_sunrise" = "日出";
-"dim_woodland" = "林间";
 "dim_reactive_v2" = "自适应 V2";
-"dim_starfield" = "星空";
-"dim_desert" = "沙漠";
 "dim_off" = "调暗关闭";
 
 // Floating hints & popups

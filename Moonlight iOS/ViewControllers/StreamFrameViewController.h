@@ -24,8 +24,11 @@ typedef void (^noargCallbackType)(void);
 @property (nonatomic, strong) noargCallbackType connectedCallback;
 @property (nonatomic, strong) noargCallbackType disconnectedCallback;
 #if TARGET_OS_VISION
-@property (nonatomic, assign) BOOL uikitReconnectingForRetry;
 @property (nonatomic, assign) BOOL fpsMouseCaptureEnabled;
+// On visionOS a StreamSession owns the StreamManager and ControllerSupport. It calls this before
+// each connection attempt; the returned block creates the renderer for that attempt.
+- (id<AnyVideoDecoderRenderer> (^)(void))prepareStreamAttemptWithControllerSupport:(ControllerSupport*)controllerSupport callbacks:(id<ConnectionCallbacks>)callbacks;
+@property (nonatomic, copy) NSString* (^statsTextProvider)(void);
 #endif
 
 -(void)updatePreferredDisplayMode:(BOOL)streamActive;
