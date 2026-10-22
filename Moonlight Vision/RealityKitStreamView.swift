@@ -1215,6 +1215,8 @@ struct _RealityKitStreamView: View {
         }
         
         controlState.toggle3DMode = { [self] in
+            // The system renderer has no SBS shader; 3D only applies to streams started on the Metal path.
+            guard systemRenderer == nil else { return }
             if videoMode == .sideBySide3D {
                 videoMode = .standard2D
             } else {
@@ -2459,6 +2461,8 @@ struct _RealityKitStreamView: View {
                     self.updateScreenMaterial()
                     self.controllerSupport?.connectionEstablished()
                     self.startHideTimer()
+                } onResolutionChange: { width, height in
+                    self.correctedResolution = (width, height)
                 }
                 self.systemRenderer = renderer
                 // Drop any material cached from a previous stream: it feeds the old

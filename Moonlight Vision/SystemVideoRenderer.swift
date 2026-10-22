@@ -30,6 +30,7 @@ final class SystemVideoRenderer: NSObject, AnyVideoDecoderRenderer {
     private let synchronizer = AVSampleBufferRenderSynchronizer()
     private let callbacks: ConnectionCallbacks
     private let onFirstFrame: (() -> Void)?
+    private let onResolutionChange: ((Int, Int) -> Void)?
 
     private var videoFormat: Int32 = 0
     private var frameRate: Int32 = 60
@@ -42,10 +43,13 @@ final class SystemVideoRenderer: NSObject, AnyVideoDecoderRenderer {
     private var firstFrameEmitted = false
     private var timelineAnchored = false
     private var enqueuedCount = 0
+    private var audioConfigured = false
+    private var lastDimensions: CMVideoDimensions?
 
-    init(callbacks: ConnectionCallbacks, onFirstFrame: (() -> Void)? = nil) {
+    init(callbacks: ConnectionCallbacks, onFirstFrame: (() -> Void)? = nil, onResolutionChange: ((Int, Int) -> Void)? = nil) {
         self.callbacks = callbacks
         self.onFirstFrame = onFirstFrame
+        self.onResolutionChange = onResolutionChange
         super.init()
         synchronizer.addRenderer(sampleRenderer)
     }
@@ -67,7 +71,8 @@ final class SystemVideoRenderer: NSObject, AnyVideoDecoderRenderer {
             maximum: Float(frameRate),
             preferred: Float(frameRate)
         )
-        displayLink?.add(to: .main, forMode: .default)
+        // Keep decoding while the main run loop is tracking gestures and controls.
+        displayLink?.add(to: .main, forMode: .common)
     }
 
     func stop() {
@@ -83,6 +88,8 @@ final class SystemVideoRenderer: NSObject, AnyVideoDecoderRenderer {
         firstFrameEmitted = false
         timelineAnchored = false
         enqueuedCount = 0
+        audioConfigured = false
+        lastDimensions = nil
     }
 
     func setHdrMode(_ enabled: Bool) {
@@ -128,13 +135,20 @@ final class SystemVideoRenderer: NSObject, AnyVideoDecoderRenderer {
             }
 
             guard let newDesc = recreateFormatDescriptionForIDR(dataPtr: dataPtr, length: length) else {
+                free(dataPtr)
                 return DR_NEED_IDR
             }
             formatDesc = newDesc
-            AudioHelpers.fixAudioForSurroundForCurrentWindow()
+            reportDimensionsIfChanged(newDesc)
+            // Reconfiguring the audio session on every recovery IDR can stall playback.
+            if !audioConfigured {
+                audioConfigured = true
+                AudioHelpers.fixAudioForSurroundForCurrentWindow()
+            }
         }
 
         guard let formatDesc = formatDesc else {
+            free(dataPtr)
             return DR_NEED_IDR
         }
 
@@ -189,6 +203,18 @@ final class SystemVideoRenderer: NSObject, AnyVideoDecoderRenderer {
         }
 
         return DR_OK
+    }
+
+    /// The Metal path learns the real stream size from decoded frames; here the format
+    /// description is the only place we see it (e.g. when the host overrides the resolution).
+    private func reportDimensionsIfChanged(_ desc: CMVideoFormatDescription) {
+        let dims = CMVideoFormatDescriptionGetDimensions(desc)
+        guard dims.width > 0, dims.height > 0,
+              dims.width != lastDimensions?.width || dims.height != lastDimensions?.height else { return }
+        lastDimensions = dims
+        if let onResolutionChange {
+            DispatchQueue.main.async { onResolutionChange(Int(dims.width), Int(dims.height)) }
+        }
     }
 
     // MARK: - Format descriptions

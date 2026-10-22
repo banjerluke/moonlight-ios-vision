@@ -57,7 +57,7 @@ public class TemporarySettings: NSObject {
     @objc public var reactiveLightingEnabled: Bool = false
     /// RealityKit mode: render through AVSampleBufferVideoRenderer + VideoMaterial (system pipeline, true HDR/EDR)
     /// instead of the Metal texture path (custom shaders, but compositor-clamped to ~1.2x SDR).
-    @objc public var useSystemVideoRenderer: Bool = true
+    @objc public var useSystemVideoRenderer: Bool = false
 
     @objc public var gazeTouchMode = false
     @objc public var gazeCursorOffsetX: Int = 0
@@ -113,7 +113,7 @@ public class TemporarySettings: NSObject {
         self.dimPassthrough = false
         self.macVirtualDisplayExperimental = false
         self.reactiveLightingEnabled = false
-        self.useSystemVideoRenderer = true
+        self.useSystemVideoRenderer = false
         
         // HDR defaults: 1.0 = neutral (correct for shader)
         self.brightness = 1.0
@@ -205,7 +205,7 @@ public class TemporarySettings: NSObject {
             
             self.realitykitImmersiveMode = UserDefaults.standard.bool(forKey: "realitykitImmersiveMode")
             self.reactiveLightingEnabled = UserDefaults.standard.bool(forKey: "reactiveLightingEnabled")
-            self.useSystemVideoRenderer = UserDefaults.standard.object(forKey: "useSystemVideoRenderer") as? Bool ?? true
+            self.useSystemVideoRenderer = UserDefaults.standard.object(forKey: "useSystemVideoRenderer") as? Bool ?? false
             self.macVirtualDisplayExperimental = UserDefaults.standard.bool(forKey: "macVirtualDisplayExperimental")
             
             // --- HDR / COLOR LOADING ---
@@ -356,7 +356,7 @@ public class TemporarySettings: NSObject {
         self.realitykitScreenCornerRadius = 0.018
         self.realitykitImmersiveMode = false
         self.reactiveLightingEnabled = false
-        self.useSystemVideoRenderer = true
+        self.useSystemVideoRenderer = false
         self.macVirtualDisplayExperimental = false
         
         // Stream settings

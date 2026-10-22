@@ -804,6 +804,7 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                 let status = VTDecompressionSessionCreate(allocator: kCFAllocatorDefault, formatDescription: formatDesc, decoderSpecification: decoderConfiguration as CFDictionary, imageBufferAttributes: attributes as CFDictionary, outputCallback: &decoderCallback, decompressionSessionOut: &session)
                 guard status == noErr, let session else {
                     print("Failed to create video decompression session: \(status)")
+                    free(dataPtr)
                     return DR_NEED_IDR
                 }
                 // Ask the system to schedule decode work for real-time playback rather than
@@ -815,11 +816,13 @@ class DrawableVideoDecoder: NSObject, AnyVideoDecoderRenderer {
                     AudioHelpers.fixAudioForSurroundForCurrentWindow()
                 }
             } else {
+                free(dataPtr)
                 return DR_NEED_IDR
             }
         }
 
         guard let formatDesc = formatDesc else {
+            free(dataPtr)
             return DR_NEED_IDR
         }
 
