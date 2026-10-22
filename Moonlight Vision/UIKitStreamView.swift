@@ -392,8 +392,8 @@ struct UIKitStreamView: View {
         }
         
         let defaults = UserDefaults.standard
-        defaults.set(size.width, forKey: "uikitWindowWidth")
-        defaults.set(size.height, forKey: "uikitWindowHeight")
+        defaults.set(size.width, forKey: .uikitWindowWidth)
+        defaults.set(size.height, forKey: .uikitWindowHeight)
         lastSavedWindowSize = size
         print("Saved UIKit window size to UserDefaults: \(size)")
     }
@@ -628,8 +628,8 @@ func applyAspectRatioLock(streamConfig: StreamConfiguration, targetWindow: UIWin
         
         if desiredSize == .zero {
             let defaults = UserDefaults.standard
-            if let savedWidth = defaults.object(forKey: "uikitWindowWidth") as? CGFloat,
-               let savedHeight = defaults.object(forKey: "uikitWindowHeight") as? CGFloat {
+            if let savedWidth = defaults.object(forKey: .uikitWindowWidth) as? CGFloat,
+               let savedHeight = defaults.object(forKey: .uikitWindowHeight) as? CGFloat {
                 let savedSize = CGSize(width: savedWidth, height: savedHeight)
                 let savedAspectRatio = savedSize.width / savedSize.height
                 let aspectRatioDifference = abs(savedAspectRatio - streamAspectRatio) / streamAspectRatio

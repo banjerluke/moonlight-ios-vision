@@ -99,7 +99,6 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
     @Published var immersiveImmersionStyle: ImmersionStyle = .mixed
 #endif
     
-    private let languagePromptDefaultsKey = "didCompleteLanguagePrompt"
 
     @Published var volumeSliderValue: Float = 1.0
 
@@ -125,7 +124,7 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
         clientCert = CryptoManager.readCertFromFile()
         uniqueId = IdManager.getUniqueId()
         streamSettings = dataManager.getSettings()
-        showLanguagePrompt = !UserDefaults.standard.bool(forKey: languagePromptDefaultsKey)
+        showLanguagePrompt = !UserDefaults.standard.bool(forKey: .didCompleteLanguagePrompt)
 
         super.init()
         appManager = AppAssetManager(callback: self)
@@ -722,7 +721,7 @@ class MainViewModel: NSObject, ObservableObject, DiscoveryCallback, PairCallback
         streamSettings.appLanguage = language
         streamSettings.save()
         showLanguagePrompt = false
-        UserDefaults.standard.set(true, forKey: languagePromptDefaultsKey)
+        UserDefaults.standard.set(true, forKey: .didCompleteLanguagePrompt)
         // Trigger view update by publishing language change
         objectWillChange.send()
     }

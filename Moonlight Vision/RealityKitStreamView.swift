@@ -405,7 +405,6 @@ struct _RealityKitStreamView: View {
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("HardwareInputDetected"))) { _ in
                 if inputMode != .controller {
                     inputMode = .controller
-                    UserDefaults.standard.set(inputMode.rawValue, forKey: "immersiveInputMode")
                     let text = viewModel.localized(inputMode.localizedKey)
                     showInlineHint(text: text, icon: "gamecontroller.fill")
                     updateScreenInteractivity()
@@ -416,7 +415,6 @@ struct _RealityKitStreamView: View {
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("HandPinchDetected"))) { _ in
                 if inputMode == .controller && !viewModel.streamSettings.fpsMouseCapture {
                     inputMode = .gazeControl
-                    UserDefaults.standard.set(inputMode.rawValue, forKey: "immersiveInputMode")
                     let text = (viewModel.streamSettings.gazeTouchMode) ? viewModel.localized("input_mode_touch") : viewModel.localized(inputMode.localizedKey)
                     let icon: String
                     if viewModel.streamSettings.gazeTouchMode { icon = "hand.point.up.left.fill" }
@@ -455,7 +453,6 @@ struct _RealityKitStreamView: View {
                 if oldValue == .gazeControl && newValue != .gazeControl {
                     gazeController.cleanup()
                 }
-                UserDefaults.standard.set(newValue.rawValue, forKey: "immersiveInputMode")
                 updateScreenInteractivity() 
             }
             .onChange(of: viewModel.streamSettings.swapABXYButtons) { _, newValue in
@@ -502,7 +499,6 @@ struct _RealityKitStreamView: View {
                 if dimLevel != newValue {
                     dimLevel = newValue
                     viewModel.streamSettings.dimPassthrough = (newValue != 0)
-                    UserDefaults.standard.set(newValue, forKey: "ambient.dimming.level")
                     updateDimmerDomesState()
                 }
             }
@@ -945,19 +941,8 @@ struct _RealityKitStreamView: View {
             self.targetScale = self.screenScale
             self.tiltAngle = viewModel.streamSettings.realitykitRendererTilt
 
-            // Initialize input mode from user preference
-            if UserDefaults.standard.object(forKey: "immersive.defaultControlMode") == nil {
-                inputMode = .controller
-            } else {
-                let defaultMode = UserDefaults.standard.integer(forKey: "immersive.defaultControlMode")
-                inputMode = InputMode(rawValue: defaultMode) ?? .controller
-            }
-            
-            // Screen Move is only allowed in Immersive Mode
-            if !isImmersive && inputMode == .screenMove {
-                inputMode = .controller
-            }
-            print("[StreamView] Initialized input mode from settings: \(inputMode.displayName)")
+            // Every stream starts in controller mode.
+            inputMode = .controller
 
             // Spatial audio is read from streamSettings, no need to reset it here
 
@@ -1405,7 +1390,6 @@ struct _RealityKitStreamView: View {
                     set: { val in
                         dimLevel = val
                         viewModel.streamSettings.dimPassthrough = (val != 0)
-                        UserDefaults.standard.set(val, forKey: "ambient.dimming.level")
                         
                         updateDimmerDomesState()
                         
@@ -1513,10 +1497,8 @@ struct _RealityKitStreamView: View {
                     if inputMode == .controller && !showVirtualKeyboard {
                         inputMode = .screenMove
                         gazeController.cleanup()
-                        UserDefaults.standard.set(inputMode.rawValue, forKey: "immersiveInputMode")
                     } else if inputMode == .screenMove && showVirtualKeyboard {
                         inputMode = .controller
-                        UserDefaults.standard.set(inputMode.rawValue, forKey: "immersiveInputMode")
                     }
                 }
                 showVirtualKeyboard.toggle()
@@ -1551,7 +1533,6 @@ struct _RealityKitStreamView: View {
         let idx = allCases.firstIndex(of: inputMode) ?? 0
         inputMode = allCases[(idx + 1) % allCases.count]
         
-        UserDefaults.standard.set(inputMode.rawValue, forKey: "immersiveInputMode")
         let text = (inputMode == .gazeControl && viewModel.streamSettings.gazeTouchMode) ? viewModel.localized("input_mode_touch") : viewModel.localized(inputMode.localizedKey)
         let icon: String
         if inputMode == .gazeControl && viewModel.streamSettings.gazeTouchMode { icon = "hand.point.up.left.fill" }

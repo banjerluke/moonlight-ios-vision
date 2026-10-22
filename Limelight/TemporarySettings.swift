@@ -29,6 +29,11 @@ enum SettingsKey: String {
     case uikitWindowCornerRadius
     case spatialAudioMode
     case preferUninterruptedAudio
+    case didCompleteLanguagePrompt
+
+    // Classic (UIKit) stream window
+    case uikitWindowWidth
+    case uikitWindowHeight
 
     // Immersive screen transform
     case realitykitImmersiveScale

@@ -15,7 +15,7 @@ import UIKit
 class AudioHelpers {
     private static func configureAudioSession(exclusive: Bool) {
         let audioSession = AVAudioSession.sharedInstance()
-        let preferUninterrupted = UserDefaults.standard.object(forKey: "preferUninterruptedAudio") as? Bool ?? true
+        let preferUninterrupted = UserDefaults.standard.object(forKey: .preferUninterruptedAudio) as? Bool ?? true
         do {
             let options: AVAudioSession.CategoryOptions = (exclusive && !preferUninterrupted) ? [] : [.mixWithOthers]
             try audioSession.setCategory(.playback, options: options)
