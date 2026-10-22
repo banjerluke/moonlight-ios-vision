@@ -168,7 +168,13 @@ final class StreamSession: ObservableObject {
                     self.launchAttempt()
                 } else {
                     print("[StreamSession] Previous connection is still stopping; giving up")
-                    self.teardown(ending: .startFailed(message: MainViewModel.localizedStatic("previous_stream_still_stopping")))
+                    let message = MainViewModel.localizedStatic("previous_stream_still_stopping")
+                    // A reconnect that can't start has lost the stream; only a first start failed to start.
+                    if self.phase.reconnectAttempt != nil {
+                        self.teardown(ending: .connectionLost(message: message))
+                    } else {
+                        self.teardown(ending: .startFailed(message: message))
+                    }
                 }
             }
         }
